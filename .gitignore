@@ -1,0 +1,9 @@
+.claude/
+analysis_data/
+**/__pycache__/
+Papila/*
+REFUGE/*
+old_**/
+models/*
+!models/refuge
+!models/v2
