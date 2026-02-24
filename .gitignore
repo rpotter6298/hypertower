@@ -5,5 +5,7 @@ Papila/*
 REFUGE/*
 old_**/
 models/*
-!models/refuge
-!models/v2
+
+# model artifacts
+models/refuge/
+models/v2/refuge/
