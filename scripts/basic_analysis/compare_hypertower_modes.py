@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from classes.v2.v2_hypertower import build_parser, run_mode
+from classes.v2.v2_hypertower import V2HyperTower
 
 
 def parse_args():
@@ -35,7 +35,7 @@ def parse_args():
 
 def main():
     seq_args, remaining = parse_args()
-    base_parser = build_parser()
+    base_parser = V2HyperTower.build_parser()
     first_run = True
     for eval_mode in seq_args.eval_modes:
         for tower_mode in seq_args.tower_modes:
@@ -45,7 +45,7 @@ def main():
             if not first_run:
                 cli.append("--persist-img-crop-cache")
             args = base_parser.parse_args(cli)
-            run_mode(args)
+            V2HyperTower(args).run()
             first_run = False
 
 

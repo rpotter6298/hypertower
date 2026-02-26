@@ -55,3 +55,53 @@ class ClinicalDataset(Dataset):
                     geom_vec = torch.from_numpy(features)
             return img_t, meta_t, geom_vec, label
         return img_t, meta_t, label
+
+
+# ---------------------------------------------------------------------------
+# _ClinicalView — shim used by V2HyperTower._run_fold
+# ---------------------------------------------------------------------------
+
+from .data_bundle import DataBundle  # noqa: E402
+
+
+class _ClinicalView:
+    """Minimal shim so ClinicalDataset can iterate an epoch-specific DataFrame
+    while still delegating encoding/paths/labels to the DataBundle object."""
+
+    def __init__(self, base: DataBundle, df):
+        self.base = base
+        self.df = df
+
+    @property
+    def image_dir(self):
+        return self.base.image_dir
+
+    @property
+    def clinical_dir(self):
+        return self.base.clinical_dir
+
+    @property
+    def id_cols(self):
+        return ("Patient ID", "eyeID")
+
+    @property
+    def label_col(self):
+        return self.base.label_col
+
+    @property
+    def filename_template(self):
+        return getattr(self.base, "filename_template", "RET{pid:03d}{eye}.jpg")
+
+    @property
+    def dim(self):
+        return self.base.feature_dim
+
+    def encode_metadata(self, row):
+        vec = self.base.vectorize_row(row)
+        return torch.as_tensor(vec, dtype=torch.float32)
+
+    def get_image_path(self, row):
+        return self.base.get_image_path(row)
+
+    def get_label(self, row):
+        return int(row[self.base.label_col])

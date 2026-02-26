@@ -44,13 +44,10 @@ from classes.v2.data_bundle import DataBundle
 from classes.v2.papila_builders import build_papila_data
 from classes.v2.profiles.papila import build_papila_profile
 from classes.v2.split_manager import PatientFirstSplitManager
-from classes.v2.v2_hypertower import (
-    SingleEyeHT,
-    _score_arrays,
-    build_eval_transform,
-    filter_bilateral_samples,
-    make_loader,
-)
+from classes.v2.loader_factory import filter_bilateral_samples, make_loader
+from classes.v2.metrics import _score_arrays
+from classes.v2.models import SingleEyeHT
+from classes.v2.transforms import build_eval_transform
 
 # ---------------------------------------------------------------------------
 # Label display helpers

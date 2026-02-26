@@ -76,6 +76,11 @@ def build_backbone_transform(backbone_name: str, augment: bool = True) -> transf
     return backbone_transform_config(backbone_name, augment=augment).build()
 
 
+def build_eval_transform(backbone: str) -> transforms.Compose:
+    """Deterministic eval transform matching backbone normalisation (no augmentation)."""
+    return build_backbone_transform(backbone, augment=False)
+
+
 def build_imagenet_transform(augment: bool = True, crop_size: int = 224) -> transforms.Compose:
     return ImageTransformConfig(crop_size=crop_size, augment=augment).build()
 

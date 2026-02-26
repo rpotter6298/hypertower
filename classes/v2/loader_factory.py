@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+import torch
 from torch.utils.data import DataLoader
 
 from .network_manager import LoaderBundle, PatientSplit
@@ -163,3 +164,60 @@ class SlotLoaderFactory:
                 sample.setdefault(key, None)
             samples.append(sample)
         return samples
+
+
+# ---------------------------------------------------------------------------
+# V2 filter / loader helpers (used by V2HyperTower._run_fold)
+# ---------------------------------------------------------------------------
+
+def filter_eye_samples(samples: list[dict]) -> list[dict]:
+    """Keep any single-eye sample with a valid image, matrix, and label."""
+    return [
+        s for s in samples
+        if s.get("image_1") is not None
+        and s.get("matrix_1") is not None
+        and s.get("label_1") is not None
+    ]
+
+
+def filter_bilateral_samples(samples: list[dict]) -> list[dict]:
+    """Keep only patient-level samples where both eyes are fully present."""
+    return [
+        s for s in samples
+        if s.get("image_1") is not None
+        and s.get("matrix_1") is not None
+        and s.get("image_2") is not None
+        and s.get("matrix_2") is not None
+        and s.get("label_1") is not None
+    ]
+
+
+def make_loader(
+    samples: list[dict],
+    slots: dict,
+    *,
+    image_transform,
+    image_preprocessor=None,
+    batch_size: int,
+    shuffle: bool,
+    num_workers: int,
+) -> DataLoader:
+    ds = SlotDataset(
+        samples,
+        slots,
+        image_transform=image_transform,
+        image_preprocessor=image_preprocessor,
+    )
+    return DataLoader(
+        ds,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        collate_fn=slot_collate,
+    )
+
+
+def to_label_tensor(labels, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(labels):
+        return labels.to(device=device, dtype=torch.long)
+    return torch.as_tensor(labels, dtype=torch.long, device=device)
