@@ -36,12 +36,17 @@ def parse_args():
 def main():
     seq_args, remaining = parse_args()
     base_parser = build_parser()
+    first_run = True
     for eval_mode in seq_args.eval_modes:
         for tower_mode in seq_args.tower_modes:
             tower_mode = "single" if tower_mode == "classic" else tower_mode
             cli = list(remaining) + ["--eval-mode", eval_mode, "--tower-mode", tower_mode]
+            # Clear cache only on the first run; reuse it for all subsequent runs.
+            if not first_run:
+                cli.append("--persist-img-crop-cache")
             args = base_parser.parse_args(cli)
             run_mode(args)
+            first_run = False
 
 
 if __name__ == "__main__":

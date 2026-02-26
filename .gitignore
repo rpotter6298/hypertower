@@ -5,7 +5,7 @@ Papila/*
 REFUGE/*
 old_**/
 models/*
-
+cache_data/
 # model artifacts
 models/refuge/
 models/v2/refuge/

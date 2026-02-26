@@ -2,7 +2,6 @@
 
 Usage examples (after activating .venv_refuge):
 
-  python refuge_build.py --train-seg
   python refuge_build.py --train-clf
   python refuge_build.py --eval --with-ttt
 
@@ -297,30 +296,14 @@ def build_papila_records(
     papila_clf.backbone.to(args.device)
     papila_clf.classifier_head.to(args.device)
     papila_clf.rotation_head.to(args.device)
+    if getattr(args, "clear_clf_cache", False):
+        papila_clf.clear_disk_cache()
 
     records = papila_clf.build_records_for_samples(
         samples, crop_scale=args.crop_scale, progress_prefix="papila"
     )
     print(f"[eval] Prepared {len(records)} PAPILA records")
     return records, papila_clf
-
-
-def train_segmentation(args: argparse.Namespace) -> None:
-    pre = ensure_preprocessing()
-    seg = RefugeSegmentation(pre)
-    seg.build_datasets(
-        image_size=args.seg_image_size,
-        batch_size=args.seg_batch_size,
-        num_workers=args.num_workers,
-    )
-    history = seg.train(
-        epochs=args.seg_epochs,
-        lr=args.seg_lr,
-        weight_decay=args.seg_weight_decay,
-        checkpoint_dir=SEG_CKPT.parent,
-        device=args.device,
-    )
-    print("Segmentation training complete. Best Dice:", history.get("best_dice"))
 
 
 def train_unet_segmenter(args: argparse.Namespace) -> None:
@@ -402,6 +385,8 @@ def train_classifier(args: argparse.Namespace) -> None:
         use_all_labeled=args.clf_use_all,
         auto_val_ratio=args.clf_auto_val_ratio,
     )
+    if args.clear_clf_cache:
+        clf.clear_disk_cache()
     clf.build_datasets(
         crop_scale=args.crop_scale,
         crop_size=args.crop_size,
@@ -531,6 +516,8 @@ def evaluate(args: argparse.Namespace) -> None:
     pre = ensure_preprocessing()
     seg = _load_segmentation(pre, args)
     clf, clf_ckpt = _load_classifier(pre, seg, args)
+    if args.clear_clf_cache:
+        clf.clear_disk_cache()
 
     def evaluate_subset(
         clf_obj: RefugeClassification,
@@ -637,22 +624,26 @@ def evaluate_segmentation(args: argparse.Namespace) -> None:
         in_memory_cache=args.in_memory_cache,
         loader_workers=args.loader_workers,
     )
+    if args.seg_weights is None:
+        raise SystemExit(
+            "--seg-weights must be specified for --eval-seg; "
+            "e.g. --seg-weights models/v2/refuge/segmentation/per_image_refuge_build/best.pt"
+        )
+    ckpt = args.seg_weights
+    if not ckpt.exists():
+        raise FileNotFoundError(f"Segmentation weights not found at {ckpt}")
+    state = torch.load(ckpt, map_location=segmenter.device)
+    state_dict = state.get("model", state)
+    segmenter.model.load_state_dict(state_dict, strict=False)
+    print(f"[seg-eval] Loaded weights from {ckpt}")
+
     if args.in_memory_cache:
         segmenter.prebuild_in_memory_cache(
             cache_workers=max(0, int(args.cache_workers)),
             include_train=False,
-            include_val=bool(args.eval_seg_splits is None or "val" in args.eval_seg_splits),
-            include_holdout=bool(args.eval_seg_splits is None or "holdout" in args.eval_seg_splits),
+            include_val="val" in args.eval_seg_splits,
+            include_holdout="holdout" in args.eval_seg_splits,
         )
-
-    ckpt = resolve_unet_weights(args.seg_weights)
-    if ckpt.exists():
-        state = torch.load(ckpt, map_location=segmenter.device)
-        state_dict = state.get("model", state)
-        segmenter.model.load_state_dict(state_dict, strict=False)
-        print(f"[seg-eval] Loaded weights from {ckpt}")
-    else:
-        raise FileNotFoundError(f"Segmentation weights not found at {ckpt}")
 
     dataset_filter = args.eval_seg_datasets
     split_filter = args.eval_seg_splits
@@ -672,9 +663,6 @@ def evaluate_segmentation(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="REFUGE pipeline helper")
-    parser.add_argument(
-        "--train-seg", action="store_true", help="Train the segmentation model"
-    )
     parser.add_argument(
         "--train-unet-seg",
         action="store_true",
@@ -809,8 +797,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clf-cache-dir",
         type=Path,
-        default=Path("analysis_data/classifier_cache"),
+        default=Path("cache_data/classifier_cache"),
         help="Directory to cache classifier preprocessing artifacts",
+    )
+    parser.add_argument(
+        "--clear-clf-cache",
+        action="store_true",
+        help="Delete all cached geometry/mask files before running (use when segmenter weights have changed)",
     )
     parser.add_argument(
         "--clf-use-all",
@@ -850,7 +843,8 @@ def parse_args() -> argparse.Namespace:
         "--eval-seg-splits",
         nargs="+",
         choices=["train", "val", "holdout"],
-        help="Segmentation splits to evaluate (default: val)",
+        default=["holdout"],
+        help="Segmentation splits to evaluate (default: holdout)",
     )
     parser.add_argument(
         "--eval-seg-output",
@@ -935,7 +929,6 @@ def main() -> None:
 
     if not any(
         [
-            args.train_seg,
             args.train_unet_seg,
             args.train_clf,
             args.eval,
@@ -944,11 +937,8 @@ def main() -> None:
         ]
     ):
         raise SystemExit(
-            "Specify at least one action: --train-seg, --train-unet-seg, --train-clf, --eval, --eval-seg, or --export-backbone"
+            "Specify at least one action: --train-unet-seg, --train-clf, --eval, --eval-seg, or --export-backbone"
         )
-
-    if args.train_seg:
-        train_segmentation(args)
 
     if args.train_unet_seg:
         train_unet_segmenter(args)

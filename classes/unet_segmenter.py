@@ -448,10 +448,13 @@ class UNetSegmenter:
             vals = np.where(counts > 0)[0]
             if vals.size < 1:
                 raise ValueError(f"Mask {mask_path} does not contain discernible labels")
-            vals = vals[np.argsort(-counts[vals])]
-            disc_val = int(vals[0])
-            cup_val = int(vals[1]) if vals.size > 1 else None
-            disc_mask = (arr == disc_val).astype(np.uint8)
+            # Disc = ALL non-background pixels (full optic disc: rim + cup combined).
+            # Previously this was rim-only, which caused the cup structural prior
+            # (cup & disc) to produce empty cup masks since cup and rim don't overlap.
+            disc_mask = (arr != bg_val).astype(np.uint8)
+            # Cup = the darkest non-background value (0 in REFUGE = inner cup region).
+            # Using min-value rather than frequency avoids swapping when cup area > rim area.
+            cup_val = int(np.min(vals)) if vals.size > 1 else None
             cup_mask = (arr == cup_val).astype(np.uint8) if cup_val is not None else np.zeros_like(disc_mask, dtype=np.uint8)
             return disc_mask, cup_mask if cup_mask.any() else None, (w, h)
 

@@ -143,6 +143,12 @@ class UNetImageCropper:
         stem = image_path.stem
         return self.cache_dir / f"{stem}_s{int(self.scale * 100)}.npz"
 
+    def clear_cache(self) -> None:
+        if self.cache_dir is None or not self.cache_dir.exists():
+            return
+        removed = sum(1 for f in self.cache_dir.glob("*.npz") if f.unlink() or True)
+        print(f"[UNetImageCropper] Cleared {removed} cached crop files from {self.cache_dir}")
+
     def _infer_masks(self, image: Image.Image) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         resized = self.segmenter.preprocess_image(image)
         tensor = self.to_tensor(resized).unsqueeze(0).to(self.segmenter.device)
@@ -280,6 +286,12 @@ class ManifestImageCropper:
         if self.cache_dir is None:
             return None
         return self.cache_dir / f"{image_path.stem}_s{int(self.scale * 100)}.npz"
+
+    def clear_cache(self) -> None:
+        if self.cache_dir is None or not self.cache_dir.exists():
+            return
+        removed = sum(1 for f in self.cache_dir.glob("*.npz") if f.unlink() or True)
+        print(f"[ManifestImageCropper] Cleared {removed} cached crop files from {self.cache_dir}")
 
     @staticmethod
     def _load_contour(path: Path) -> np.ndarray:
@@ -512,8 +524,9 @@ class HyperTower:
         crop_weights = getattr(args, "img_crop_weights", None)
         use_gt = getattr(args, "img_crop_gt", False)
         if crop_manifest:
-            crop_cache = getattr(args, "img_crop_cache", Path("analysis_data/hypertower_crops"))
+            crop_cache = getattr(args, "img_crop_cache", Path("cache_data/hypertower_crops"))
             crop_cache = Path(crop_cache)
+            persist_cache = bool(getattr(args, "persist_img_crop_cache", False))
             if use_gt:
                 self.image_preprocessor = ManifestImageCropper(
                     manifest_path=Path(crop_manifest),
@@ -521,6 +534,8 @@ class HyperTower:
                     target_size=getattr(args, "img_crop_size", 224),
                     cache_dir=crop_cache,
                 )
+                if not persist_cache:
+                    self.image_preprocessor.clear_cache()
                 print(f"[HyperTower] GT disc cropper enabled → cache at {crop_cache}")
             elif crop_weights:
                 self.image_preprocessor = UNetImageCropper(
@@ -533,6 +548,8 @@ class HyperTower:
                     target_size=getattr(args, "img_crop_size", 224),
                     cache_dir=crop_cache,
                 )
+                if not persist_cache:
+                    self.image_preprocessor.clear_cache()
                 print(f"[HyperTower] UNet disc cropper enabled → cache at {crop_cache}")
             else:
                 print("[HyperTower] img_crop_manifest provided but no weights/gt flag; skipping cropping")
@@ -2254,7 +2271,8 @@ def build_image_preprocessor_from_args(args):
     use_gt = bool(getattr(args, "img_crop_gt", False))
     if not crop_manifest:
         return None
-    crop_cache = Path(getattr(args, "img_crop_cache", Path("analysis_data/hypertower_crops")))
+    crop_cache = Path(getattr(args, "img_crop_cache", Path("cache_data/hypertower_crops")))
+    persist_cache = bool(getattr(args, "persist_img_crop_cache", False))
     if use_gt:
         pre = ManifestImageCropper(
             manifest_path=Path(crop_manifest),
@@ -2262,6 +2280,8 @@ def build_image_preprocessor_from_args(args):
             target_size=getattr(args, "img_crop_size", 224),
             cache_dir=crop_cache,
         )
+        if not persist_cache:
+            pre.clear_cache()
         print(f"[V2 modes] GT disc cropper enabled -> cache at {crop_cache}", flush=True)
         return pre
     if crop_weights:
@@ -2275,6 +2295,8 @@ def build_image_preprocessor_from_args(args):
             target_size=getattr(args, "img_crop_size", 224),
             cache_dir=crop_cache,
         )
+        if not persist_cache:
+            pre.clear_cache()
         print(f"[V2 modes] UNet disc cropper enabled -> cache at {crop_cache}", flush=True)
         return pre
     print(
@@ -2686,6 +2708,14 @@ class FoldResult:
     bilat_val_threshold: float
     bilat_val_bias:      Optional[str]
     bilat_val_n:         int
+    # Holdout metrics (evaluated at the same epoch as best val; nan if no holdout)
+    classic_holdout_auc:  float
+    classic_holdout_acc:  float
+    ensemble_holdout_auc: float
+    ensemble_holdout_acc: float
+    bilat_holdout_auc:    float
+    bilat_holdout_acc:    float
+    holdout_n:            int    # number of holdout bilateral samples
     # Training sample counts
     single_train_n: int
     bilat_train_n:  int
@@ -2800,6 +2830,10 @@ def run_fold(
             bilat_val_mcc=nan,  bilat_val_f1=nan,   bilat_val_recall=None,
             bilat_val_ece=nan,  bilat_val_threshold=nan, bilat_val_bias=None,
             bilat_val_n=0,
+            classic_holdout_auc=nan,  classic_holdout_acc=nan,
+            ensemble_holdout_auc=nan, ensemble_holdout_acc=nan,
+            bilat_holdout_auc=nan,    bilat_holdout_acc=nan,
+            holdout_n=0,
             single_train_n=len(eye_train), bilat_train_n=len(bilat_train),
         )
         return empty, FoldArtifacts(
@@ -2861,6 +2895,23 @@ def run_fold(
         **loader_kw,
     )
 
+    # ---- holdout loader (if holdout patients are available) ------------------
+    holdout_bilat: list = []
+    holdout_loader = None
+    if split.holdout is not None and not split.holdout.empty:
+        holdout_bilat = filter_bilateral_samples(
+            profile_patient.build_samples(df=split.holdout, clinical=data)
+        )
+        if holdout_bilat:
+            holdout_loader = make_loader(
+                holdout_bilat, slots_patient,
+                image_transform=eval_transform,
+                image_preprocessor=image_preprocessor,
+                shuffle=False,
+                **loader_kw,
+            )
+            print(f"  [fold {fold+1}] holdout_n={len(holdout_bilat)} (bilateral patients)", flush=True)
+
     opt_single = torch.optim.Adam(single.parameters(), lr=args.lr) if run_single else None
     opt_bilateral = torch.optim.Adam(bilateral.parameters(), lr=args.lr) if run_bilat else None
 
@@ -2871,11 +2922,15 @@ def run_fold(
         "main_epoch_single", "main_epoch_bilat",
         "single_active", "bilat_active",
         "single_train_loss", "single_train_acc",
-        "classic_val_auc",   "classic_val_acc",   "classic_val_n",
-        "ensemble_val_auc",  "ensemble_val_acc",  "ensemble_val_n",
-        "bilat_train_loss",  "bilat_train_acc",
-        "bilat_val_auc",     "bilat_val_acc",     "bilat_val_n",
+        "classic_val_auc",      "classic_val_acc",      "classic_val_n",
+        "ensemble_val_auc",     "ensemble_val_acc",     "ensemble_val_n",
+        "bilat_train_loss",     "bilat_train_acc",
+        "bilat_val_auc",        "bilat_val_acc",        "bilat_val_n",
+        "classic_holdout_auc",  "classic_holdout_acc",
+        "ensemble_holdout_auc", "ensemble_holdout_acc",
+        "bilat_holdout_auc",    "bilat_holdout_acc",
         "is_best_single", "is_best_bilat",
+        "is_best_holdout_single", "is_best_holdout_bilat",
     ]
     fold_logger = HypertowerLogger(run_dir=fold_dir)
 
@@ -2889,6 +2944,16 @@ def run_fold(
     snap_classic:  dict = {}
     snap_ensemble: dict = {}
     snap_bilat:    dict = {}
+    # holdout snaps (metrics captured at the same epoch as best val)
+    snap_holdout_single: dict = {}
+    snap_holdout_bilat:  dict = {}
+    # separate best-holdout trackers (for checkpointing)
+    best_holdout_single_auc   = -1.0
+    best_holdout_bilat_auc    = -1.0
+    best_epoch_holdout_single = 0
+    best_epoch_holdout_bilat  = 0
+    best_holdout_single_state: Optional[dict] = None
+    best_holdout_bilat_state:  Optional[dict] = None
 
     if run_single:
         print(
@@ -3011,8 +3076,36 @@ def run_fold(
             bi_n = 0
             bi_acc_img = bi_acc_md = bi_auc_img = bi_auc_md = nan
 
+        # --- holdout evaluation -----------------------------------------------
+        if holdout_loader is not None:
+            if run_single and tower_mode == "single":
+                y_cl_h, p_cl_h, _, _ = collect_probs_single_components(
+                    single, holdout_loader, device, aggregate_patient=False
+                )
+                _, cl_auc_h, _ = _score_arrays(y_cl_h, p_cl_h, num_classes)
+                cl_acc_h = float((p_cl_h.argmax(1) == y_cl_h).mean()) if y_cl_h.size else nan
+                en_auc_h = en_acc_h = nan
+            elif run_single and tower_mode == "ensemble":
+                y_en_h, p_en_h, _, _ = collect_probs_single_components(
+                    single, holdout_loader, device, aggregate_patient=True
+                )
+                _, en_auc_h, _ = _score_arrays(y_en_h, p_en_h, num_classes)
+                en_acc_h = float((p_en_h.argmax(1) == y_en_h).mean()) if y_en_h.size else nan
+                cl_auc_h = cl_acc_h = nan
+            else:
+                cl_auc_h = cl_acc_h = en_auc_h = en_acc_h = nan
+            if run_bilat:
+                y_bi_h, p_bi_h, _, _ = collect_probs_bilateral_components(bilateral, holdout_loader, device)
+                _, bi_auc_h, _ = _score_arrays(y_bi_h, p_bi_h, num_classes)
+                bi_acc_h = float((p_bi_h.argmax(1) == y_bi_h).mean()) if y_bi_h.size else nan
+            else:
+                bi_auc_h = bi_acc_h = nan
+        else:
+            cl_auc_h = cl_acc_h = en_auc_h = en_acc_h = bi_auc_h = bi_acc_h = nan
+
         # Best-epoch checks: checkpointing is restricted to the main phase only.
         target_single_auc = cl_auc if tower_mode == "single" else en_auc
+        target_holdout_single_auc = cl_auc_h if tower_mode == "single" else en_auc_h
         single_ckpt_eligible = run_single and (phase_single == "main")
         is_best_single = (
             single_ckpt_eligible
@@ -3029,6 +3122,19 @@ def run_fold(
             else:
                 snap_en, _, _, _ = _tune_and_snap(y_en, p_en, en_acc, num_classes, args, args.ece_bins)
                 snap_ensemble = snap_en
+            # capture holdout metrics at this val-best epoch
+            snap_holdout_single = {"auc": float(target_holdout_single_auc), "acc": float(cl_acc_h if tower_mode == "single" else en_acc_h)}
+
+        is_best_holdout_single = (
+            holdout_loader is not None
+            and single_ckpt_eligible
+            and (not np.isnan(target_holdout_single_auc))
+            and (target_holdout_single_auc > best_holdout_single_auc)
+        )
+        if is_best_holdout_single:
+            best_holdout_single_auc   = target_holdout_single_auc
+            best_epoch_holdout_single = epoch + 1
+            best_holdout_single_state = copy.deepcopy(single.state_dict())
 
         bilat_ckpt_eligible = run_bilat and (phase_bilat == "main")
         is_best_bilat = (
@@ -3042,6 +3148,19 @@ def run_fold(
             best_bilat_state = copy.deepcopy(bilateral.state_dict())
             snap_bi, _, _, _ = _tune_and_snap(y_bi, p_bi, bi_acc, num_classes, args, args.ece_bins)
             snap_bilat = snap_bi
+            # capture holdout metrics at this val-best epoch
+            snap_holdout_bilat = {"auc": float(bi_auc_h), "acc": float(bi_acc_h)}
+
+        is_best_holdout_bilat = (
+            holdout_loader is not None
+            and bilat_ckpt_eligible
+            and (not np.isnan(bi_auc_h))
+            and (bi_auc_h > best_holdout_bilat_auc)
+        )
+        if is_best_holdout_bilat:
+            best_holdout_bilat_auc   = bi_auc_h
+            best_epoch_holdout_bilat = epoch + 1
+            best_holdout_bilat_state = copy.deepcopy(bilateral.state_dict())
 
         fold_logger.write_epoch_row({
             "fold": fold, "epoch": epoch + 1,
@@ -3052,15 +3171,22 @@ def run_fold(
             "single_active": int(single_active),
             "bilat_active": int(bilat_active),
             "single_train_loss": _f(sl_loss), "single_train_acc": _f(sl_acc),
-            "classic_val_auc":  _f(cl_auc),  "classic_val_acc":  _f(cl_acc),  "classic_val_n":  cl_n,
-            "ensemble_val_auc": _f(en_auc),  "ensemble_val_acc": _f(en_acc),  "ensemble_val_n": en_n,
-            "bilat_train_loss": _f(bl_loss), "bilat_train_acc":  _f(bl_acc),
-            "bilat_val_auc":    _f(bi_auc),  "bilat_val_acc":    _f(bi_acc),  "bilat_val_n":    bi_n,
-            "is_best_single": int(is_best_single),
-            "is_best_bilat":  int(is_best_bilat),
+            "classic_val_auc":      _f(cl_auc),   "classic_val_acc":   _f(cl_acc),  "classic_val_n":  cl_n,
+            "ensemble_val_auc":     _f(en_auc),   "ensemble_val_acc":  _f(en_acc),  "ensemble_val_n": en_n,
+            "bilat_train_loss":     _f(bl_loss),  "bilat_train_acc":   _f(bl_acc),
+            "bilat_val_auc":        _f(bi_auc),   "bilat_val_acc":     _f(bi_acc),  "bilat_val_n":    bi_n,
+            "classic_holdout_auc":  _f(cl_auc_h), "classic_holdout_acc":  _f(cl_acc_h),
+            "ensemble_holdout_auc": _f(en_auc_h), "ensemble_holdout_acc": _f(en_acc_h),
+            "bilat_holdout_auc":    _f(bi_auc_h), "bilat_holdout_acc":    _f(bi_acc_h),
+            "is_best_single":         int(is_best_single),
+            "is_best_bilat":          int(is_best_bilat),
+            "is_best_holdout_single": int(is_best_holdout_single),
+            "is_best_holdout_bilat":  int(is_best_holdout_bilat),
         }, optional_cols=epoch_fields)
 
         if args.log_every > 0 and (epoch + 1) % args.log_every == 0:
+            hld_auc = target_holdout_single_auc if run_single else bi_auc_h
+            hld_suffix = f"  hld_auc={hld_auc:.4f}" if holdout_loader is not None else ""
             if run_single:
                 if tower_mode == "single":
                     msg = (
@@ -3070,6 +3196,7 @@ def run_fold(
                         f"img(acc={cl_acc_img:.4f},auc={cl_auc_img:.4f}) "
                         f"md(acc={cl_acc_md:.4f},auc={cl_auc_md:.4f})  "
                         f"(best_fused={best_single_auc:.4f} @ep{best_epoch_single})"
+                        f"{hld_suffix}"
                     )
                 else:
                     msg = (
@@ -3079,6 +3206,7 @@ def run_fold(
                         f"img(acc={en_acc_img:.4f},auc={en_auc_img:.4f}) "
                         f"md(acc={en_acc_md:.4f},auc={en_auc_md:.4f})  "
                         f"(best_fused={best_single_auc:.4f} @ep{best_epoch_single})"
+                        f"{hld_suffix}"
                     )
             else:
                 msg = (
@@ -3088,6 +3216,7 @@ def run_fold(
                     f"img(acc={bi_acc_img:.4f},auc={bi_auc_img:.4f}) "
                     f"md(acc={bi_acc_md:.4f},auc={bi_auc_md:.4f})  "
                     f"(best_bilat={best_bilat_auc:.4f} @ep{best_epoch_bilat})"
+                    f"{hld_suffix}"
                 )
             print(msg, flush=True)
             fold_logger.info(msg)
@@ -3099,6 +3228,10 @@ def run_fold(
             torch.save(best_single_state, fold_dir / "best_single.pt")
         if best_bilat_state is not None:
             torch.save(best_bilat_state, fold_dir / "best_bilateral.pt")
+        if best_holdout_single_state is not None:
+            torch.save(best_holdout_single_state, fold_dir / "best_holdout_single.pt")
+        if best_holdout_bilat_state is not None:
+            torch.save(best_holdout_bilat_state, fold_dir / "best_holdout_bilateral.pt")
 
     if run_single:
         if tower_mode == "single":
@@ -3181,6 +3314,13 @@ def run_fold(
         bilat_val_threshold=snap_bilat.get("threshold", nan),
         bilat_val_bias=_svf(snap_bilat.get("bias")),
         bilat_val_n=snap_bilat.get("n", 0),
+        classic_holdout_auc=snap_holdout_single.get("auc", nan) if tower_mode == "single" else nan,
+        classic_holdout_acc=snap_holdout_single.get("acc", nan) if tower_mode == "single" else nan,
+        ensemble_holdout_auc=snap_holdout_single.get("auc", nan) if tower_mode == "ensemble" else nan,
+        ensemble_holdout_acc=snap_holdout_single.get("acc", nan) if tower_mode == "ensemble" else nan,
+        bilat_holdout_auc=snap_holdout_bilat.get("auc", nan),
+        bilat_holdout_acc=snap_holdout_bilat.get("acc", nan),
+        holdout_n=len(holdout_bilat),
         single_train_n=len(eye_train),
         bilat_train_n=len(bilat_train),
     ), FoldArtifacts(
@@ -3214,6 +3354,20 @@ def _summary(results: list[FoldResult]) -> dict:
             mean, std = _ms(vals)
             sub[f"{m}_mean"] = mean
             if m in ("auc", "f1", "kappa"):
+                sub[f"{m}_std"] = std
+        out[label] = sub
+
+    for label, prefix in [
+        ("classic_holdout",  "classic_holdout"),
+        ("ensemble_holdout", "ensemble_holdout"),
+        ("bilat_holdout",    "bilat_holdout"),
+    ]:
+        sub = {}
+        for m in ["auc", "acc"]:
+            vals = [getattr(r, f"{prefix}_{m}") for r in results]
+            mean, std = _ms(vals)
+            sub[f"{m}_mean"] = mean
+            if m == "auc":
                 sub[f"{m}_std"] = std
         out[label] = sub
 
@@ -3310,8 +3464,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="single",
         help="Train/evaluate a single tower mode.",
     )
-    ap.add_argument("--n-splits",     type=int,   default=5)
-    ap.add_argument("--fold-seed",    type=int,   default=42)
+    ap.add_argument("--n-splits",          type=int,   default=5)
+    ap.add_argument("--fold-seed",         type=int,   default=42)
+    ap.add_argument("--holdout-per-class", type=int,   default=5,
+                    help="Patients per class reserved for holdout before train/test split (0 disables)")
+    ap.add_argument("--holdout-seed",      type=int,   default=123,
+                    help="Random seed for holdout sampling")
     ap.add_argument(
         "--folds",
         type=int,
@@ -3365,8 +3523,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Disc-radius multiplier for square crop.")
     ap.add_argument("--img-crop-size", type=int, default=224,
                     help="Output ROI size before tower transforms.")
-    ap.add_argument("--img-crop-cache", type=str, default="analysis_data/hypertower_crops",
+    ap.add_argument("--img-crop-cache", type=str, default="cache_data/hypertower_crops",
                     help="Cache directory for cropped images and geometry sidecars.")
+    ap.add_argument("--persist-img-crop-cache", action="store_true",
+                    help="Keep existing cached crop .npz files instead of clearing at run start.")
     # Architecture
     ap.add_argument("--md-hidden-dim", type=int, default=128,
                     help="MDTower hidden dimension.")
@@ -3407,7 +3567,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--ece-bins",     type=int, default=10)
     ap.add_argument("--log-every",    type=int, default=1)
-    ap.add_argument("--save-checkpoints", action="store_true")
+    ap.add_argument("--save-checkpoints", action=argparse.BooleanOptionalAction, default=True,
+                    help="Save best_single.pt / best_holdout_single.pt per fold (use --no-save-checkpoints to disable)")
     return ap
 
 
@@ -3498,8 +3659,8 @@ def run_mode(args) -> Path:
     )
     split_args = SimpleNamespace(
         eval_mode=mode,
-        holdout_per_class=0,
-        holdout_seed=123,
+        holdout_per_class=args.holdout_per_class,
+        holdout_seed=args.holdout_seed,
         n_splits=args.n_splits,
         fold_seed=args.fold_seed,
     )
