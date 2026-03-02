@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from .network_manager import LoaderBundle, PatientSplit
 from .slot_dataset import SlotDataset, slot_collate
@@ -201,6 +201,7 @@ def make_loader(
     batch_size: int,
     shuffle: bool,
     num_workers: int,
+    sampler: Optional[WeightedRandomSampler] = None,
 ) -> DataLoader:
     ds = SlotDataset(
         samples,
@@ -211,10 +212,20 @@ def make_loader(
     return DataLoader(
         ds,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=(shuffle if sampler is None else False),
+        sampler=sampler,
         num_workers=num_workers,
         collate_fn=slot_collate,
     )
+
+
+def build_balanced_sampler(samples: list[dict], label_key: str = "label_1") -> WeightedRandomSampler:
+    """Return a WeightedRandomSampler that equalises class frequency for training."""
+    from collections import Counter
+    labels = [s[label_key] for s in samples]
+    counts = Counter(labels)
+    weights = [1.0 / counts[lbl] for lbl in labels]
+    return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
 
 
 def to_label_tensor(labels, device: torch.device) -> torch.Tensor:

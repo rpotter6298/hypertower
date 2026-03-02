@@ -1,7 +1,7 @@
 """Result dataclasses and serialisation helpers for V2 fold outputs."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -84,6 +84,19 @@ class FoldResult:
     # Training sample counts
     single_train_n: int
     bilat_train_n:  int
+    # Fused head (ensemble + --fused-head; nan / None if --fused-head not used)
+    fused_val_auc:       float        = float("nan")
+    fused_val_acc:       float        = float("nan")
+    fused_val_kappa:     float        = float("nan")
+    fused_val_mcc:       float        = float("nan")
+    fused_val_f1:        float        = float("nan")
+    fused_val_recall:    Optional[str] = None
+    fused_val_ece:       float        = float("nan")
+    fused_val_threshold: float        = float("nan")
+    fused_val_bias:      Optional[str] = None
+    fused_val_n:         int          = 0
+    fused_holdout_auc:   float        = float("nan")
+    fused_holdout_acc:   float        = float("nan")
 
 
 @dataclass
@@ -94,3 +107,5 @@ class FoldArtifacts:
     probs_ensemble:  Optional[np.ndarray]
     y_true_bilat:    Optional[np.ndarray]
     probs_bilat:     Optional[np.ndarray]
+    y_true_fused:    Optional[np.ndarray] = None
+    probs_fused:     Optional[np.ndarray] = None

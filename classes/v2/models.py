@@ -157,6 +157,53 @@ class BilateralHT(nn.Module):
         return out_f
 
 
+class FusedEnsembleHT(nn.Module):
+    """
+    SingleEyeHT base with a per-eye attention scorer for bilateral fusion.
+
+    The base model is trained eye-level (identical to ensemble mode).
+    After base training completes, the base is frozen and only the
+    eye_scorer is trained on bilateral (patient-level) samples.
+
+    At inference, eye_scorer is applied independently to each eye's logit
+    vector to produce a scalar attention score.  Softmax over the two scores
+    gives attention weights; the final logit is a weighted sum:
+
+        score_od = eye_scorer(logit_od)          # [B, 1]
+        score_os = eye_scorer(logit_os)          # [B, 1]
+        alpha    = softmax([score_od, score_os]) # [B, 2], sums to 1
+        out      = alpha[:,0:1]*logit_od + alpha[:,1:2]*logit_os
+
+    Because eye_scorer is applied to each eye with the same weights, the
+    mechanism is permutation-equivariant — there is no left/right positional
+    bias.  Through training on bilateral labels the scorer learns to give high
+    scores to logits that point strongly toward the GC class, creating the
+    desired asymmetry: a confidently GC eye dominates the patient prediction
+    more than a comparably confident healthy eye would.
+    """
+
+    def __init__(self, base: SingleEyeHT, num_classes: int):
+        super().__init__()
+        self.base = base
+        # Applied independently to each eye's logit → scalar attention score.
+        # Learns the GC-direction in logit space from bilateral labels.
+        self.eye_scorer = nn.Linear(num_classes, 1, bias=True)
+
+    def forward(
+        self,
+        x_od:    torch.Tensor,
+        meta_od: torch.Tensor,
+        x_os:    torch.Tensor,
+        meta_os: torch.Tensor,
+    ) -> torch.Tensor:
+        logit_od = self.base(x_od, meta_od)                                    # [B, C]
+        logit_os = self.base(x_os, meta_os)                                    # [B, C]
+        scores   = torch.cat([self.eye_scorer(logit_od),
+                               self.eye_scorer(logit_os)], dim=1)              # [B, 2]
+        alpha    = torch.softmax(scores, dim=1)                                # [B, 2]
+        return alpha[:, 0:1] * logit_od + alpha[:, 1:2] * logit_os            # [B, C]
+
+
 # ---------------------------------------------------------------------------
 # Phase control
 # ---------------------------------------------------------------------------
@@ -327,6 +374,39 @@ def train_bilateral_epoch(
     )
 
 
+def train_fusion_epoch(
+    model: FusedEnsembleHT,
+    loader: DataLoader,
+    opt,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Train only the fusion head; the base SingleEyeHT is frozen in eval mode."""
+    model.base.eval()
+    model.eye_scorer.train()
+    total_loss = total_correct = total_n = 0
+    for batch in loader:
+        x1 = batch.get("image_1"); m1 = batch.get("matrix_1")
+        x2 = batch.get("image_2"); m2 = batch.get("matrix_2")
+        y  = batch.get("label_1")
+        if not (torch.is_tensor(x1) and torch.is_tensor(m1) and
+                torch.is_tensor(x2) and torch.is_tensor(m2)):
+            continue
+        y_t   = _to_label_tensor(y, device)
+        out   = model(x1.to(device), m1.to(device), x2.to(device), m2.to(device))
+        loss  = F.cross_entropy(out, y_t)
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        bs = y_t.shape[0]
+        total_loss    += float(loss.item()) * bs
+        total_correct += int((out.argmax(1) == y_t).sum())
+        total_n       += bs
+    return (
+        total_loss / total_n if total_n else float("nan"),
+        total_correct / total_n if total_n else float("nan"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Inference helpers
 # ---------------------------------------------------------------------------
@@ -413,6 +493,32 @@ def collect_probs_bilateral(
                 continue
             y_t = _to_label_tensor(y, device)
             p = F.softmax(model(x1.to(device), m1.to(device), x2.to(device), m2.to(device)), dim=1)
+            y_chunks.append(y_t.cpu().numpy())
+            p_chunks.append(p.cpu().numpy())
+    if not y_chunks:
+        return np.array([], dtype=np.int64), np.zeros((0, 0), dtype=np.float32)
+    return np.concatenate(y_chunks), np.concatenate(p_chunks, axis=0)
+
+
+def collect_probs_fused(
+    model: FusedEnsembleHT,
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Patient-level fused-head eval. Returns (y_true [N], probs [N, C])."""
+    model.eval()
+    y_chunks, p_chunks = [], []
+    with torch.no_grad():
+        for batch in loader:
+            x1 = batch.get("image_1"); m1 = batch.get("matrix_1")
+            x2 = batch.get("image_2"); m2 = batch.get("matrix_2")
+            y  = batch.get("label_1")
+            if not (torch.is_tensor(x1) and torch.is_tensor(m1) and
+                    torch.is_tensor(x2) and torch.is_tensor(m2)):
+                continue
+            y_t = _to_label_tensor(y, device)
+            p   = F.softmax(model(x1.to(device), m1.to(device),
+                                  x2.to(device), m2.to(device)), dim=1)
             y_chunks.append(y_t.cpu().numpy())
             p_chunks.append(p.cpu().numpy())
     if not y_chunks:
