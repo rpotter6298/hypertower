@@ -48,6 +48,7 @@ from classes.v2.models import (
     train_single_epoch,
 )
 from classes.v2.papila_builders import build_papila_data
+from classes.v2.predictions import PredictionStore, head_names_for_mode
 from classes.v2.profiles import build_papila_profile
 from classes.v2.results import FoldArtifacts, FoldResult, _f, _nan, _sv
 from classes.v2.split_manager import PatientFirstSplitManager
@@ -407,6 +408,46 @@ class V2HyperTower:
             patient_col="Patient ID", label_col=args.label_col, sample_mode="patient"
         )
 
+        # ---- PredictionStore — build once before fold loop ---------------
+        fused_head = getattr(args, "fused_head", False)
+        _head_names = head_names_for_mode(tower_mode, fused_head=fused_head)
+        fusion_epochs = int(getattr(args, "fusion_epochs", 10)) if fused_head else 0
+        _global_warmup_tower = getattr(args, "warmup_tower_epochs", None)
+        _global_warmup_fused = getattr(args, "warmup_fused_epochs", None)
+        _warmup_tower = (
+            int(args.single_warmup_tower_epochs)
+            if getattr(args, "single_warmup_tower_epochs", None) is not None
+            else int(_global_warmup_tower) if _global_warmup_tower is not None else 2
+        )
+        _warmup_fused = (
+            int(args.single_warmup_fused_epochs)
+            if getattr(args, "single_warmup_fused_epochs", None) is not None
+            else int(_global_warmup_fused) if _global_warmup_fused is not None else 2
+        )
+        _total_epochs = _warmup_tower + _warmup_fused + int(args.epochs) + fusion_epochs
+
+        # sample IDs depend on mode: single uses eye IDs, others use patient IDs
+        if tower_mode in ("single", "classic"):
+            _sample_ids = [
+                f"{row['Patient ID']}{row['eyeID']}"
+                for _, row in df_mode.iterrows()
+            ]
+            _y_true = df_mode[args.label_col].tolist()
+        else:
+            # one row per patient (deduplicate — take first occurrence per patient)
+            _pat_df = df_mode.drop_duplicates(subset="Patient ID")
+            _sample_ids = _pat_df["Patient ID"].astype(str).tolist()
+            _y_true = _pat_df[args.label_col].tolist()
+
+        pred_store = PredictionStore(
+            sample_ids=_sample_ids,
+            y_true=_y_true,
+            head_names=_head_names,
+            n_folds=n_folds,
+            n_epochs=_total_epochs,
+            n_classes=num_classes,
+        )
+
         for fold in range(n_folds):
             seed_everything(args.seed + fold * 100)
             fold_dir = tm_dir / f"fold{fold}"
@@ -423,6 +464,7 @@ class V2HyperTower:
                 profile_patient=profile_patient,
                 fold_dir=fold_dir,
                 tower_mode=tower_mode,
+                pred_store=pred_store,
             )
             fold_results.append(result)
             if artifacts.y_true_ensemble is not None:
@@ -549,6 +591,7 @@ class V2HyperTower:
             "mode_summary": summary,
         }
         (tm_dir / "summary.json").write_text(json.dumps(mode_summary, indent=2), encoding="utf-8")
+        pred_store.save(tm_dir / "predictions.npz")
 
         root_summary_path = out_dir / "summary.json"
         if root_summary_path.exists():
@@ -583,6 +626,7 @@ class V2HyperTower:
         profile_patient,
         fold_dir: Path,
         tower_mode: str,
+        pred_store: "PredictionStore | None" = None,
     ) -> tuple[FoldResult, FoldArtifacts]:
         args = self.args
         device = self.device
@@ -630,6 +674,18 @@ class V2HyperTower:
         eye_train   = filter_eye_samples(profile_eye.build_samples(df=split.train, clinical=data))
         bilat_train = filter_bilateral_samples(profile_patient.build_samples(df=split.train, clinical=data))
         bilat_val   = filter_bilateral_samples(profile_patient.build_samples(df=split.val, clinical=data))
+
+        # Register split labels in the prediction store
+        if pred_store is not None:
+            if tower_mode in ("single", "classic"):
+                # eye-level IDs: "{patient_id}{eyeID}"
+                train_sids = [f"{s['id_1']}{s.get('eye_id_1','')}" for s in eye_train]
+                val_sids   = [f"{s['id_1']}{s.get('eye_id_1','')}" for s in bilat_val]
+            else:
+                train_sids = [str(s["id_1"]) for s in bilat_train]
+                val_sids   = [str(s["id_1"]) for s in bilat_val]
+            pred_store.set_split(fold, train_sids, "train")
+            pred_store.set_split(fold, val_sids,   "val")
 
         if len(bilat_val) == 0:
             print(f"  [fold {fold+1}] WARNING: no bilateral val samples; skipping fold.", flush=True)
@@ -751,6 +807,8 @@ class V2HyperTower:
                     **loader_kw,
                 )
                 print(f"  [fold {fold+1}] holdout_n={len(holdout_bilat)} (bilateral patients)", flush=True)
+                if pred_store is not None:
+                    pred_store.set_split(fold, [str(s["id_1"]) for s in holdout_bilat], "holdout")
 
         opt_single   = torch.optim.Adam(single.parameters(), lr=args.lr)   if run_single else None
         opt_bilateral = torch.optim.Adam(bilateral.parameters(), lr=args.lr) if run_bilat  else None
@@ -918,7 +976,7 @@ class V2HyperTower:
                 _, cl_auc_img, _ = _score_arrays(y_cl, p_cl_img, num_classes)
                 _, cl_auc_md, _  = _score_arrays(y_cl, p_cl_md,  num_classes)
                 y_en = np.array([], dtype=np.int64)
-                p_en = np.zeros((0, 0), dtype=np.float32)
+                p_en = p_en_img = p_en_md = np.zeros((0, num_classes), dtype=np.float32)
                 en_acc = en_auc = nan
                 en_n = 0
                 en_acc_img = en_acc_md = en_auc_img = en_auc_md = nan
@@ -939,13 +997,14 @@ class V2HyperTower:
                 _, en_auc_img, _ = _score_arrays(y_en, p_en_img, num_classes)
                 _, en_auc_md, _  = _score_arrays(y_en, p_en_md,  num_classes)
                 y_cl = np.array([], dtype=np.int64)
-                p_cl = np.zeros((0, 0), dtype=np.float32)
+                p_cl = p_cl_img = p_cl_md = np.zeros((0, num_classes), dtype=np.float32)
                 cl_acc = cl_auc = nan
                 cl_n = 0
                 cl_acc_img = cl_acc_md = cl_auc_img = cl_auc_md = nan
             else:
                 y_cl = y_en = np.array([], dtype=np.int64)
-                p_cl = p_en = np.zeros((0, 0), dtype=np.float32)
+                p_cl = p_cl_img = p_cl_md = np.zeros((0, num_classes), dtype=np.float32)
+                p_en = p_en_img = p_en_md = np.zeros((0, num_classes), dtype=np.float32)
                 cl_acc = cl_auc = en_acc = en_auc = nan
                 cl_n = en_n = 0
                 cl_acc_img = cl_acc_md = en_acc_img = en_acc_md = nan
@@ -1052,6 +1111,23 @@ class V2HyperTower:
                     _epoch_train_pm.append(p_tr_m)
                     _epoch_train_ids.append(tr_ids)
                     _epoch_train_y.append(y_tr)
+                    # record into PredictionStore
+                    if pred_store is not None:
+                        if tower_mode in ("single", "classic"):
+                            pred_store.record(fold, epoch, tr_ids, "fused", p_tr_f)
+                            pred_store.record(fold, epoch, tr_ids, "img",   p_tr_i)
+                            pred_store.record(fold, epoch, tr_ids, "md",    p_tr_m)
+                        else:  # ensemble: separate OD and OS by eye suffix
+                            od_mask = np.array([str(i).endswith("OD") for i in tr_ids])
+                            os_mask = ~od_mask
+                            od_pids = [str(i)[:-2] for i in tr_ids[od_mask]]
+                            os_pids = [str(i)[:-2] for i in tr_ids[os_mask]]
+                            pred_store.record(fold, epoch, od_pids, "od_fused", p_tr_f[od_mask])
+                            pred_store.record(fold, epoch, od_pids, "od_img",   p_tr_i[od_mask])
+                            pred_store.record(fold, epoch, od_pids, "od_md",    p_tr_m[od_mask])
+                            pred_store.record(fold, epoch, os_pids, "os_fused", p_tr_f[os_mask])
+                            pred_store.record(fold, epoch, os_pids, "os_img",   p_tr_i[os_mask])
+                            pred_store.record(fold, epoch, os_pids, "os_md",    p_tr_m[os_mask])
 
             # accumulate val for npy tensors
             if run_single and tower_mode == "ensemble" and y_en.size:
@@ -1072,6 +1148,20 @@ class V2HyperTower:
                 _epoch_val_pi_os.append(p_cl_img)
                 _epoch_val_pm_os.append(p_cl_md)
                 _epoch_val_y.append(y_cl)
+
+            # record val into PredictionStore
+            if pred_store is not None:
+                if run_single and tower_mode == "ensemble" and y_en.size:
+                    pred_store.record(fold, epoch, _en_pat_ids, "od_fused", _p_en_f_od)
+                    pred_store.record(fold, epoch, _en_pat_ids, "od_img",   _p_en_i_od)
+                    pred_store.record(fold, epoch, _en_pat_ids, "od_md",    _p_en_m_od)
+                    pred_store.record(fold, epoch, _en_pat_ids, "os_fused", _p_en_f_os)
+                    pred_store.record(fold, epoch, _en_pat_ids, "os_img",   _p_en_i_os)
+                    pred_store.record(fold, epoch, _en_pat_ids, "os_md",    _p_en_m_os)
+                elif run_single and tower_mode == "single" and y_cl.size:
+                    # val in single mode: collect_probs_single_components(aggregate_patient=False)
+                    # returns interleaved [all_OD, all_OS] per batch — IDs not tracked here yet
+                    pass  # single-mode val IDs not currently available; train IDs are sufficient
 
             # Best-epoch checks (restricted to main phase).
             target_single_auc         = cl_auc if tower_mode == "single" else en_auc
@@ -1197,11 +1287,33 @@ class V2HyperTower:
             if args.log_every > 0 and (epoch + 1) % args.log_every == 0:
                 hld_auc = target_holdout_single_auc if run_single else bi_auc_h
                 hld_suffix = f"  hld_auc={hld_auc:.4f}" if holdout_loader is not None else ""
+
+                # Human-readable phase progress for console logs.
+                if phase_single == "tower_warmup":
+                    single_phase_epoch = epoch + 1
+                    single_phase_total = single_warmup_tower
+                elif phase_single == "fused_warmup":
+                    single_phase_epoch = epoch - single_warmup_tower + 1
+                    single_phase_total = single_warmup_fused
+                else:
+                    single_phase_epoch = main_epoch_single
+                    single_phase_total = main_epochs
+
+                if phase_bilat == "tower_warmup":
+                    bilat_phase_epoch = epoch + 1
+                    bilat_phase_total = bilat_warmup_tower
+                elif phase_bilat == "fused_warmup":
+                    bilat_phase_epoch = epoch - bilat_warmup_tower + 1
+                    bilat_phase_total = bilat_warmup_fused
+                else:
+                    bilat_phase_epoch = main_epoch_bilat
+                    bilat_phase_total = main_epochs
+
                 if run_single:
                     if tower_mode == "single":
                         msg = (
                             f"    ep {epoch+1:>3}/{total_epochs} "
-                            f"[single:{phase_single} {main_epoch_single}/{main_epochs}] "
+                            f"[single:{phase_single} {single_phase_epoch}/{single_phase_total}] "
                             f"fused(acc={cl_acc:.4f},auc={cl_auc:.4f}) "
                             f"img(acc={cl_acc_img:.4f},auc={cl_auc_img:.4f}) "
                             f"md(acc={cl_acc_md:.4f},auc={cl_auc_md:.4f})  "
@@ -1211,7 +1323,7 @@ class V2HyperTower:
                     else:
                         msg = (
                             f"    ep {epoch+1:>3}/{total_epochs} "
-                            f"[single:{phase_single} {main_epoch_single}/{main_epochs}] "
+                            f"[single:{phase_single} {single_phase_epoch}/{single_phase_total}] "
                             f"fused(acc={en_acc:.4f},auc={en_auc:.4f}) "
                             f"img(acc={en_acc_img:.4f},auc={en_auc_img:.4f}) "
                             f"md(acc={en_acc_md:.4f},auc={en_auc_md:.4f})  "
@@ -1221,7 +1333,7 @@ class V2HyperTower:
                 else:
                     msg = (
                         f"    ep {epoch+1:>3}/{total_epochs} "
-                        f"[bilat:{phase_bilat} {main_epoch_bilat}/{main_epochs}] "
+                        f"[bilat:{phase_bilat} {bilat_phase_epoch}/{bilat_phase_total}] "
                         f"fused(acc={bi_acc:.4f},auc={bi_auc:.4f}) "
                         f"img(acc={bi_acc_img:.4f},auc={bi_auc_img:.4f}) "
                         f"md(acc={bi_acc_md:.4f},auc={bi_auc_md:.4f})  "
@@ -1285,10 +1397,14 @@ class V2HyperTower:
                 flush=True,
             )
 
+            _val_pids_for_store = [str(s["id_1"]) for s in bilat_val]
             for fep in range(fusion_epochs):
                 fu_loss, fu_acc = train_fusion_epoch(fused, train_bilat_loader, opt_fused, device)
                 y_fu, p_fu = collect_probs_fused(fused, val_loader, device)
                 fu_auc = _score_arrays(y_fu, p_fu, num_classes)[1]
+                if pred_store is not None and y_fu.size:
+                    _store_ep = total_single_epochs + fep
+                    pred_store.record(fold, _store_ep, _val_pids_for_store, "bilat_fused", p_fu)
 
                 # Holdout eval (if available)
                 fu_hld_auc = nan
