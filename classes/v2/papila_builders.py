@@ -50,14 +50,15 @@ def _correct_iop(raw_iop: float, pachy: float) -> float:
 
 
 def _apply_iop_and_drop_md(df: pd.DataFrame) -> pd.DataFrame:
-    """Add IOP_raw/IOP_corr and drop VF_MD if present (in-place safe)."""
+    """Add IOP_raw/IOP_corr and drop source IOP columns + VF_MD if present (in-place safe)."""
     df["IOP_raw"] = df.apply(_pick_iop, axis=1)
     pachy = df.get("Pachymetry", pd.Series(np.nan, index=df.index))
     df["IOP_corr"] = [
         _correct_iop(r, p) for r, p in zip(df["IOP_raw"].values, pachy.values)
     ]
-    if "VF_MD" in df.columns:
-        df.drop(columns=["VF_MD"], inplace=True)
+    drop_cols = [c for c in ("Pneumatic", "Perkins", "VF_MD") if c in df.columns]
+    if drop_cols:
+        df.drop(columns=drop_cols, inplace=True)
     return df
 
 

@@ -20,6 +20,13 @@ def _default_slot_descriptors(patient_col: str, label_col: str) -> dict[str, Slo
             required=True,
             shape_hint="scalar",
         ),
+        "eye_id_1": SlotDescriptor(
+            key="eye_id_1",
+            kind="id",
+            description="Eye side identifier (OD/OS)",
+            required=False,
+            shape_hint="scalar",
+        ),
         "label_1": SlotDescriptor(
             key="label_1",
             kind="label",
@@ -53,6 +60,7 @@ def _row_to_sample(
 ) -> dict[str, Any]:
     return {
         "id_1": row[patient_col],
+        "eye_id_1": str(row.get("eyeID", "")),
         "label_1": row[label_col],
         "image_1": clinical.get_image_path(row) if hasattr(clinical, "get_image_path") else None,
         "matrix_1": clinical.vectorize_row(row) if hasattr(clinical, "vectorize_row") else None,

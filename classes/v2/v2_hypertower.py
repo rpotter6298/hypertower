@@ -39,6 +39,8 @@ from classes.v2.models import (
     collect_probs_bilateral_components,
     collect_probs_classic,
     collect_probs_ensemble,
+    collect_probs_ensemble_pereye,
+    collect_probs_eye_level,
     collect_probs_fused,
     collect_probs_single_components,
     train_bilateral_epoch,
@@ -57,6 +59,98 @@ from classes.v2.utils import (
     seed_everything,
 )
 from classes.v2.hypertower_logger import HypertowerLogger
+
+
+# ---------------------------------------------------------------------------
+# Fusion-event helper
+# ---------------------------------------------------------------------------
+
+def _fusion_events(
+    y: np.ndarray,
+    pf: np.ndarray,
+    pi: np.ndarray,
+    pm: np.ndarray,
+) -> tuple[int, int]:
+    """
+    Count fusion corrections and errors.
+    - correction: fused correct, both img and md wrong
+    - error:      fused wrong, both img and md correct
+    Returns (n_corrections, n_errors).
+    """
+    pred_f = pf.argmax(1); pred_i = pi.argmax(1); pred_m = pm.argmax(1)
+    corr = int(((pred_f == y) & (pred_i != y) & (pred_m != y)).sum())
+    err  = int(((pred_f != y) & (pred_i == y) & (pred_m == y)).sum())
+    return corr, err
+
+
+def _cm_cells(y: np.ndarray, p: np.ndarray, num_classes: int) -> dict[str, int]:
+    """
+    Return confusion matrix cells as a flat dict.
+    Binary:     keys tn/fp/fn/tp
+    Multiclass: keys cm_{i}_{j} for true class i, predicted class j
+    Returns empty dict if arrays are empty or wrong shape.
+    """
+    if not y.size or p.ndim < 2 or p.shape[1] != num_classes:
+        return {}
+    pred = p.argmax(1)
+    if num_classes == 2:
+        tn = int(((pred == 0) & (y == 0)).sum())
+        fp = int(((pred == 1) & (y == 0)).sum())
+        fn = int(((pred == 0) & (y == 1)).sum())
+        tp = int(((pred == 1) & (y == 1)).sum())
+        return {"tn": tn, "fp": fp, "fn": fn, "tp": tp}
+    # multiclass: full NxN matrix
+    out: dict[str, int] = {}
+    for i in range(num_classes):
+        for j in range(num_classes):
+            out[f"cm_{i}_{j}"] = int(((y == i) & (pred == j)).sum())
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Per-sample prediction logging
+# ---------------------------------------------------------------------------
+
+def _save_predictions_csv(
+    fold_dir: Path,
+    eval_mode: str,
+    y_true: np.ndarray,
+    heads: dict,          # {"fused": probs_array, "img": probs_array, "md": probs_array, ...}
+    suffix: str = "",     # e.g. "_pereye"
+) -> None:
+    """
+    Save a per-sample CSV with predicted class, per-class probabilities,
+    and TP/FP/TN/FN (binary) or correct flag (multiclass) for every head.
+    """
+    N = len(y_true)
+    num_classes = next(p.shape[1] for p in heads.values() if p is not None)
+    rows = []
+    for i in range(N):
+        true = int(y_true[i])
+        row: dict = {"idx": i, "y_true": true}
+        for head_name, probs in heads.items():
+            if probs is None:
+                continue
+            pred = int(probs[i].argmax())
+            row[f"pred_{head_name}"] = pred
+            for c in range(num_classes):
+                row[f"prob_{head_name}_c{c}"] = float(probs[i, c])
+            if eval_mode == "binary":
+                row[f"tp_{head_name}"] = int(pred == 1 and true == 1)
+                row[f"fp_{head_name}"] = int(pred == 1 and true == 0)
+                row[f"tn_{head_name}"] = int(pred == 0 and true == 0)
+                row[f"fn_{head_name}"] = int(pred == 0 and true == 1)
+            else:
+                row[f"correct_{head_name}"] = int(pred == true)
+        rows.append(row)
+
+    if not rows:
+        return
+    csv_path = fold_dir / f"predictions{suffix}.csv"
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +250,9 @@ class V2HyperTower:
                         help="MDTower hidden dimension.")
         ap.add_argument("--fusion-dim",    type=int, default=256,
                         help="Bridge/BilateralBridge fusion dimension.")
+        ap.add_argument("--bridge-mode", default="fused",
+                        choices=["fused", "image_only", "metadata_only"],
+                        help="Bridge fusion mode: fused (default), image_only, or metadata_only.")
         # Mixed patients
         ap.add_argument(
             "--exclude-mixed-patients",
@@ -332,10 +429,73 @@ class V2HyperTower:
                 np.save(fold_dir / "y_true.npy", artifacts.y_true_ensemble)
             if artifacts.probs_ensemble is not None:
                 np.save(fold_dir / "probs_fused.npy", artifacts.probs_ensemble)
+            if artifacts.probs_ensemble_img is not None:
+                np.save(fold_dir / "probs_img.npy", artifacts.probs_ensemble_img)
+            if artifacts.probs_ensemble_md is not None:
+                np.save(fold_dir / "probs_md.npy", artifacts.probs_ensemble_md)
             if artifacts.probs_classic is not None:
                 np.save(fold_dir / "probs_classic.npy", artifacts.probs_classic)
+            if artifacts.probs_classic_img is not None:
+                np.save(fold_dir / "probs_classic_img.npy", artifacts.probs_classic_img)
+            if artifacts.probs_classic_md is not None:
+                np.save(fold_dir / "probs_classic_md.npy", artifacts.probs_classic_md)
+            if artifacts.y_true_ensemble_pereye is not None:
+                np.save(fold_dir / "y_true_pereye.npy", artifacts.y_true_ensemble_pereye)
+            if artifacts.probs_ensemble_pereye is not None:
+                np.save(fold_dir / "probs_fused_pereye.npy", artifacts.probs_ensemble_pereye)
+            if artifacts.probs_ensemble_img_pereye is not None:
+                np.save(fold_dir / "probs_img_pereye.npy", artifacts.probs_ensemble_img_pereye)
+            if artifacts.probs_ensemble_md_pereye is not None:
+                np.save(fold_dir / "probs_md_pereye.npy", artifacts.probs_ensemble_md_pereye)
+            if artifacts.logits_ensemble is not None:
+                np.save(fold_dir / "logits_fused.npy", artifacts.logits_ensemble)
+            if artifacts.logits_ensemble_img is not None:
+                np.save(fold_dir / "logits_img.npy", artifacts.logits_ensemble_img)
+            if artifacts.logits_ensemble_md is not None:
+                np.save(fold_dir / "logits_md.npy", artifacts.logits_ensemble_md)
+            if artifacts.logits_classic is not None:
+                np.save(fold_dir / "logits_classic.npy", artifacts.logits_classic)
+            if artifacts.logits_classic_img is not None:
+                np.save(fold_dir / "logits_classic_img.npy", artifacts.logits_classic_img)
+            if artifacts.logits_classic_md is not None:
+                np.save(fold_dir / "logits_classic_md.npy", artifacts.logits_classic_md)
+            if artifacts.logits_ensemble_pereye is not None:
+                np.save(fold_dir / "logits_fused_pereye.npy", artifacts.logits_ensemble_pereye)
+            if artifacts.logits_ensemble_img_pereye is not None:
+                np.save(fold_dir / "logits_img_pereye.npy", artifacts.logits_ensemble_img_pereye)
+            if artifacts.logits_ensemble_md_pereye is not None:
+                np.save(fold_dir / "logits_md_pereye.npy", artifacts.logits_ensemble_md_pereye)
             if artifacts.probs_bilat is not None:
                 np.save(fold_dir / "probs_bilat.npy", artifacts.probs_bilat)
+            if artifacts.probs_fused is not None:
+                np.save(fold_dir / "probs_fused_head.npy", artifacts.probs_fused)
+            # y_true is shared across all heads for the same fold
+            if artifacts.y_true_bilat is not None and artifacts.y_true_ensemble is None:
+                np.save(fold_dir / "y_true.npy", artifacts.y_true_bilat)
+            # per-sample prediction CSVs
+            if artifacts.y_true_ensemble is not None:
+                _save_predictions_csv(
+                    fold_dir, mode, artifacts.y_true_ensemble,
+                    {"fused": artifacts.probs_ensemble,
+                     "img":   artifacts.probs_ensemble_img,
+                     "md":    artifacts.probs_ensemble_md},
+                )
+            if artifacts.y_true_ensemble_pereye is not None:
+                _save_predictions_csv(
+                    fold_dir, mode, artifacts.y_true_ensemble_pereye,
+                    {"fused": artifacts.probs_ensemble_pereye,
+                     "img":   artifacts.probs_ensemble_img_pereye,
+                     "md":    artifacts.probs_ensemble_md_pereye},
+                    suffix="_pereye",
+                )
+            if artifacts.y_true_classic is not None:
+                _save_predictions_csv(
+                    fold_dir, mode, artifacts.y_true_classic,
+                    {"fused": artifacts.probs_classic,
+                     "img":   artifacts.probs_classic_img,
+                     "md":    artifacts.probs_classic_md},
+                    suffix="_classic",
+                )
 
         fold_csv = tm_dir / "fold_results.csv"
         csv_fields = list(FoldResult.__dataclass_fields__.keys())
@@ -509,6 +669,7 @@ class V2HyperTower:
                 augment=args.augment, clinical_data=data,
                 num_classes=num_classes,
                 md_hidden_dim=args.md_hidden_dim, fusion_dim=args.fusion_dim,
+                bridge_mode=getattr(args, "bridge_mode", "fused"),
             ).to(device)
         if run_bilat:
             bilateral = BilateralHT(
@@ -525,6 +686,7 @@ class V2HyperTower:
         # ---- loaders ---------------------------------------------------
         use_balanced = bool(getattr(args, "balanced_sampling", False))
         train_single_loader = None
+        train_eval_loader   = None   # non-shuffled, no sampler — for per-epoch train logging
         train_bilat_loader  = None
         if run_single:
             single_sampler = build_balanced_sampler(eye_train) if use_balanced else None
@@ -534,6 +696,13 @@ class V2HyperTower:
                 image_preprocessor=image_preprocessor,
                 shuffle=True,
                 sampler=single_sampler,
+                **loader_kw,
+            )
+            train_eval_loader = make_loader(
+                eye_train, slots_eye,
+                image_transform=build_eval_transform(args.backbone),
+                image_preprocessor=image_preprocessor,
+                shuffle=False,
                 **loader_kw,
             )
         if run_bilat:
@@ -593,17 +762,67 @@ class V2HyperTower:
             "main_epoch_single", "main_epoch_bilat",
             "single_active", "bilat_active",
             "single_train_loss", "single_train_acc",
+            # val — fused head (existing)
             "classic_val_auc",      "classic_val_acc",      "classic_val_n",
             "ensemble_val_auc",     "ensemble_val_acc",     "ensemble_val_n",
             "bilat_train_loss",     "bilat_train_acc",
             "bilat_val_auc",        "bilat_val_acc",        "bilat_val_n",
+            # val — img/md heads + fusion events
+            "classic_val_auc_img",  "classic_val_acc_img",
+            "classic_val_auc_md",   "classic_val_acc_md",
+            "classic_val_fe_corr",  "classic_val_fe_err",
+            "ensemble_val_auc_img", "ensemble_val_acc_img",
+            "ensemble_val_auc_md",  "ensemble_val_acc_md",
+            "ensemble_val_fe_corr", "ensemble_val_fe_err",
+            "bilat_val_auc_img",    "bilat_val_acc_img",
+            "bilat_val_auc_md",     "bilat_val_acc_md",
+            "bilat_val_fe_corr",    "bilat_val_fe_err",
+            # holdout — fused head (existing)
             "classic_holdout_auc",  "classic_holdout_acc",
             "ensemble_holdout_auc", "ensemble_holdout_acc",
             "bilat_holdout_auc",    "bilat_holdout_acc",
+            # holdout — img/md heads + fusion events
+            "classic_holdout_auc_img",  "classic_holdout_acc_img",
+            "classic_holdout_auc_md",   "classic_holdout_acc_md",
+            "classic_holdout_fe_corr",  "classic_holdout_fe_err",
+            "ensemble_holdout_auc_img", "ensemble_holdout_acc_img",
+            "ensemble_holdout_auc_md",  "ensemble_holdout_acc_md",
+            "ensemble_holdout_fe_corr", "ensemble_holdout_fe_err",
+            # train-set eval pass (eval mode, all 3 heads)
+            "train_auc_fused",  "train_acc_fused",
+            "train_auc_img",    "train_acc_img",
+            "train_auc_md",     "train_acc_md",
+            "train_fe_corr",    "train_fe_err",
+            "train_n",
             "is_best_single", "is_best_bilat",
             "is_best_holdout_single", "is_best_holdout_bilat",
         ]
+        # CM columns — named by num_classes so binary and multiclass both work
+        if num_classes == 2:
+            _cm_keys = ["tn", "fp", "fn", "tp"]
+        else:
+            _cm_keys = [f"cm_{i}_{j}" for i in range(num_classes) for j in range(num_classes)]
+        for _split in ("classic_val", "ensemble_val", "classic_holdout", "ensemble_holdout", "train"):
+            for _head in ("fused", "img", "md"):
+                for _k in _cm_keys:
+                    epoch_fields.append(f"{_split}_{_head}_{_k}")
         fold_logger = HypertowerLogger(run_dir=fold_dir)
+
+        # per-epoch accumulation for npy tensors
+        _epoch_train_pf:  list[np.ndarray] = []
+        _epoch_train_pi:  list[np.ndarray] = []
+        _epoch_train_pm:  list[np.ndarray] = []
+        _epoch_train_ids: list[np.ndarray] = []
+        _epoch_train_y:   list[np.ndarray] = []
+        # per-eye val accumulators (ensemble mode: OD and OS separate)
+        _epoch_val_pf_od: list[np.ndarray] = []
+        _epoch_val_pi_od: list[np.ndarray] = []
+        _epoch_val_pm_od: list[np.ndarray] = []
+        _epoch_val_pf_os: list[np.ndarray] = []
+        _epoch_val_pi_os: list[np.ndarray] = []
+        _epoch_val_pm_os: list[np.ndarray] = []
+        _epoch_val_y:     list[np.ndarray] = []
+        _epoch_val_ids:   list[np.ndarray] = []
 
         # ---- best-epoch trackers ---------------------------------------
         best_single_auc = -1.0
@@ -704,9 +923,16 @@ class V2HyperTower:
                 en_n = 0
                 en_acc_img = en_acc_md = en_auc_img = en_auc_md = nan
             elif run_single and tower_mode == "ensemble":
-                y_en, p_en, p_en_img, p_en_md = collect_probs_single_components(
-                    single, val_loader, device, aggregate_patient=True
+                (y_en,
+                 _p_en_f_od, _p_en_i_od, _p_en_m_od,
+                 _p_en_f_os, _p_en_i_os, _p_en_m_os,
+                 _en_pat_ids) = collect_probs_ensemble_pereye(
+                    single, val_loader, device, return_ids=True
                 )
+                # patient-level averages (used for metrics, same as before)
+                p_en     = 0.5 * (_p_en_f_od + _p_en_f_os)
+                p_en_img = 0.5 * (_p_en_i_od + _p_en_i_os)
+                p_en_md  = 0.5 * (_p_en_m_od + _p_en_m_os)
                 en_acc, en_auc, en_n = _score_arrays(y_en, p_en, num_classes)
                 en_acc_img = float((p_en_img.argmax(1) == y_en).mean()) if y_en.size else nan
                 en_acc_md  = float((p_en_md.argmax(1) == y_en).mean()) if y_en.size else nan
@@ -742,23 +968,47 @@ class V2HyperTower:
                 bi_acc_img = bi_acc_md = bi_auc_img = bi_auc_md = nan
 
             # --- holdout evaluation ------------------------------------
+            # defaults (overwritten below when holdout_loader is not None)
+            _z2 = np.zeros((0, num_classes), dtype=np.float32)
+            _e2 = np.array([], dtype=np.int64)
+            y_cl_h = y_en_h = _e2
+            p_cl_h = p_cl_h_img = p_cl_h_md = _z2
+            p_en_h = p_en_h_img = p_en_h_md = _z2
+
             if holdout_loader is not None:
                 if run_single and tower_mode == "single":
-                    y_cl_h, p_cl_h, _, _ = collect_probs_single_components(
+                    y_cl_h, p_cl_h, p_cl_h_img, p_cl_h_md = collect_probs_single_components(
                         single, holdout_loader, device, aggregate_patient=False
                     )
                     _, cl_auc_h, _ = _score_arrays(y_cl_h, p_cl_h, num_classes)
                     cl_acc_h = float((p_cl_h.argmax(1) == y_cl_h).mean()) if y_cl_h.size else nan
+                    _, cl_auc_h_img, _ = _score_arrays(y_cl_h, p_cl_h_img, num_classes)
+                    cl_acc_h_img = float((p_cl_h_img.argmax(1) == y_cl_h).mean()) if y_cl_h.size else nan
+                    _, cl_auc_h_md, _  = _score_arrays(y_cl_h, p_cl_h_md,  num_classes)
+                    cl_acc_h_md  = float((p_cl_h_md.argmax(1) == y_cl_h).mean()) if y_cl_h.size else nan
+                    cl_fe_h_corr, cl_fe_h_err = _fusion_events(y_cl_h, p_cl_h, p_cl_h_img, p_cl_h_md)
                     en_auc_h = en_acc_h = nan
+                    en_auc_h_img = en_acc_h_img = en_auc_h_md = en_acc_h_md = nan
+                    en_fe_h_corr = en_fe_h_err = 0
                 elif run_single and tower_mode == "ensemble":
-                    y_en_h, p_en_h, _, _ = collect_probs_single_components(
+                    y_en_h, p_en_h, p_en_h_img, p_en_h_md = collect_probs_single_components(
                         single, holdout_loader, device, aggregate_patient=True
                     )
                     _, en_auc_h, _ = _score_arrays(y_en_h, p_en_h, num_classes)
                     en_acc_h = float((p_en_h.argmax(1) == y_en_h).mean()) if y_en_h.size else nan
+                    _, en_auc_h_img, _ = _score_arrays(y_en_h, p_en_h_img, num_classes)
+                    en_acc_h_img = float((p_en_h_img.argmax(1) == y_en_h).mean()) if y_en_h.size else nan
+                    _, en_auc_h_md, _  = _score_arrays(y_en_h, p_en_h_md,  num_classes)
+                    en_acc_h_md  = float((p_en_h_md.argmax(1) == y_en_h).mean()) if y_en_h.size else nan
+                    en_fe_h_corr, en_fe_h_err = _fusion_events(y_en_h, p_en_h, p_en_h_img, p_en_h_md)
                     cl_auc_h = cl_acc_h = nan
+                    cl_auc_h_img = cl_acc_h_img = cl_auc_h_md = cl_acc_h_md = nan
+                    cl_fe_h_corr = cl_fe_h_err = 0
                 else:
                     cl_auc_h = cl_acc_h = en_auc_h = en_acc_h = nan
+                    cl_auc_h_img = cl_acc_h_img = cl_auc_h_md = cl_acc_h_md = nan
+                    en_auc_h_img = en_acc_h_img = en_auc_h_md = en_acc_h_md = nan
+                    cl_fe_h_corr = cl_fe_h_err = en_fe_h_corr = en_fe_h_err = 0
                 if run_bilat:
                     y_bi_h, p_bi_h, _, _ = collect_probs_bilateral_components(
                         bilateral, holdout_loader, device
@@ -769,6 +1019,59 @@ class V2HyperTower:
                     bi_auc_h = bi_acc_h = nan
             else:
                 cl_auc_h = cl_acc_h = en_auc_h = en_acc_h = bi_auc_h = bi_acc_h = nan
+                cl_auc_h_img = cl_acc_h_img = cl_auc_h_md = cl_acc_h_md = nan
+                en_auc_h_img = en_acc_h_img = en_auc_h_md = en_acc_h_md = nan
+                cl_fe_h_corr = cl_fe_h_err = en_fe_h_corr = en_fe_h_err = 0
+
+            # --- fusion-event helpers for val sets ----------------------
+            cl_fe_corr, cl_fe_err = _fusion_events(y_cl, p_cl, p_cl_img, p_cl_md) if y_cl.size else (0, 0)
+            en_fe_corr, en_fe_err = _fusion_events(y_en, p_en, p_en_img, p_en_md) if y_en.size else (0, 0)
+            bi_fe_corr, bi_fe_err = (0, 0)  # bilateral components not separated the same way
+
+            # --- train eval pass (eval mode, all 3 heads) ----------------
+            tr_auc_f = tr_acc_f = tr_auc_i = tr_acc_i = tr_auc_m = tr_acc_m = nan
+            tr_fe_corr = tr_fe_err = tr_n = 0
+            y_tr = np.array([], dtype=np.int64)
+            p_tr_f = p_tr_i = p_tr_m = np.zeros((0, num_classes), dtype=np.float32)
+            if run_single and train_eval_loader is not None:
+                y_tr, p_tr_f, p_tr_i, p_tr_m, tr_ids = collect_probs_eye_level(
+                    single, train_eval_loader, device, return_ids=True
+                )
+                if y_tr.size:
+                    _, tr_auc_f, _ = _score_arrays(y_tr, p_tr_f, num_classes)
+                    tr_acc_f = float((p_tr_f.argmax(1) == y_tr).mean())
+                    _, tr_auc_i, _ = _score_arrays(y_tr, p_tr_i, num_classes)
+                    tr_acc_i = float((p_tr_i.argmax(1) == y_tr).mean())
+                    _, tr_auc_m, _ = _score_arrays(y_tr, p_tr_m, num_classes)
+                    tr_acc_m = float((p_tr_m.argmax(1) == y_tr).mean())
+                    tr_fe_corr, tr_fe_err = _fusion_events(y_tr, p_tr_f, p_tr_i, p_tr_m)
+                    tr_n = int(y_tr.size)
+                    # accumulate for npy tensors
+                    _epoch_train_pf.append(p_tr_f)
+                    _epoch_train_pi.append(p_tr_i)
+                    _epoch_train_pm.append(p_tr_m)
+                    _epoch_train_ids.append(tr_ids)
+                    _epoch_train_y.append(y_tr)
+
+            # accumulate val for npy tensors
+            if run_single and tower_mode == "ensemble" and y_en.size:
+                _epoch_val_pf_od.append(_p_en_f_od)
+                _epoch_val_pi_od.append(_p_en_i_od)
+                _epoch_val_pm_od.append(_p_en_m_od)
+                _epoch_val_pf_os.append(_p_en_f_os)
+                _epoch_val_pi_os.append(_p_en_i_os)
+                _epoch_val_pm_os.append(_p_en_m_os)
+                _epoch_val_y.append(y_en)
+                _epoch_val_ids.append(_en_pat_ids)
+            elif run_single and tower_mode == "single" and y_cl.size:
+                # single mode: no per-eye split, reuse same array for both slots
+                _epoch_val_pf_od.append(p_cl)
+                _epoch_val_pi_od.append(p_cl_img)
+                _epoch_val_pm_od.append(p_cl_md)
+                _epoch_val_pf_os.append(p_cl)
+                _epoch_val_pi_os.append(p_cl_img)
+                _epoch_val_pm_os.append(p_cl_md)
+                _epoch_val_y.append(y_cl)
 
             # Best-epoch checks (restricted to main phase).
             target_single_auc         = cl_auc if tower_mode == "single" else en_auc
@@ -830,23 +1133,65 @@ class V2HyperTower:
                 best_epoch_holdout_bilat = epoch + 1
                 best_holdout_bilat_state = copy.deepcopy(bilateral.state_dict())
 
+            # --- confusion matrix cells per split × head -------------------
+            def _prefixed_cm(prefix: str, y: np.ndarray, pf: np.ndarray,
+                              pi: np.ndarray, pm: np.ndarray) -> dict:
+                out: dict = {}
+                for head, p in (("fused", pf), ("img", pi), ("md", pm)):
+                    for k, v in _cm_cells(y, p, num_classes).items():
+                        out[f"{prefix}_{head}_{k}"] = v
+                return out
+
+            cm_row: dict = {}
+            cm_row.update(_prefixed_cm("classic_val",        y_cl,   p_cl,     p_cl_img,   p_cl_md))
+            cm_row.update(_prefixed_cm("ensemble_val",       y_en,   p_en,     p_en_img,   p_en_md))
+            cm_row.update(_prefixed_cm("classic_holdout",    y_cl_h, p_cl_h,   p_cl_h_img, p_cl_h_md))
+            cm_row.update(_prefixed_cm("ensemble_holdout",   y_en_h, p_en_h,   p_en_h_img, p_en_h_md))
+            cm_row.update(_prefixed_cm("train",              y_tr,   p_tr_f,   p_tr_i,     p_tr_m))
+
             fold_logger.write_epoch_row({
                 "fold": fold, "epoch": epoch + 1,
                 "phase_single": phase_single, "phase_bilat": phase_bilat,
                 "main_epoch_single": main_epoch_single, "main_epoch_bilat": main_epoch_bilat,
                 "single_active": int(single_active), "bilat_active": int(bilat_active),
                 "single_train_loss": _f(sl_loss), "single_train_acc": _f(sl_acc),
+                # val — fused
                 "classic_val_auc":  _f(cl_auc), "classic_val_acc":  _f(cl_acc), "classic_val_n":  cl_n,
                 "ensemble_val_auc": _f(en_auc), "ensemble_val_acc": _f(en_acc), "ensemble_val_n": en_n,
                 "bilat_train_loss": _f(bl_loss), "bilat_train_acc": _f(bl_acc),
                 "bilat_val_auc":    _f(bi_auc), "bilat_val_acc":    _f(bi_acc), "bilat_val_n":    bi_n,
+                # val — img/md + fusion events
+                "classic_val_auc_img":  _f(cl_auc_img),  "classic_val_acc_img":  _f(cl_acc_img),
+                "classic_val_auc_md":   _f(cl_auc_md),   "classic_val_acc_md":   _f(cl_acc_md),
+                "classic_val_fe_corr":  cl_fe_corr,       "classic_val_fe_err":   cl_fe_err,
+                "ensemble_val_auc_img": _f(en_auc_img),  "ensemble_val_acc_img": _f(en_acc_img),
+                "ensemble_val_auc_md":  _f(en_auc_md),   "ensemble_val_acc_md":  _f(en_acc_md),
+                "ensemble_val_fe_corr": en_fe_corr,       "ensemble_val_fe_err":  en_fe_err,
+                "bilat_val_auc_img":    _f(bi_auc_img),  "bilat_val_acc_img":    _f(bi_acc_img),
+                "bilat_val_auc_md":     _f(bi_auc_md),   "bilat_val_acc_md":     _f(bi_acc_md),
+                "bilat_val_fe_corr":    bi_fe_corr,       "bilat_val_fe_err":     bi_fe_err,
+                # holdout — fused
                 "classic_holdout_auc":  _f(cl_auc_h), "classic_holdout_acc":  _f(cl_acc_h),
                 "ensemble_holdout_auc": _f(en_auc_h), "ensemble_holdout_acc": _f(en_acc_h),
                 "bilat_holdout_auc":    _f(bi_auc_h), "bilat_holdout_acc":    _f(bi_acc_h),
+                # holdout — img/md + fusion events
+                "classic_holdout_auc_img":  _f(cl_auc_h_img),  "classic_holdout_acc_img":  _f(cl_acc_h_img),
+                "classic_holdout_auc_md":   _f(cl_auc_h_md),   "classic_holdout_acc_md":   _f(cl_acc_h_md),
+                "classic_holdout_fe_corr":  cl_fe_h_corr,       "classic_holdout_fe_err":   cl_fe_h_err,
+                "ensemble_holdout_auc_img": _f(en_auc_h_img),  "ensemble_holdout_acc_img": _f(en_acc_h_img),
+                "ensemble_holdout_auc_md":  _f(en_auc_h_md),   "ensemble_holdout_acc_md":  _f(en_acc_h_md),
+                "ensemble_holdout_fe_corr": en_fe_h_corr,       "ensemble_holdout_fe_err":  en_fe_h_err,
+                # train eval pass
+                "train_auc_fused": _f(tr_auc_f), "train_acc_fused": _f(tr_acc_f),
+                "train_auc_img":   _f(tr_auc_i), "train_acc_img":   _f(tr_acc_i),
+                "train_auc_md":    _f(tr_auc_m), "train_acc_md":    _f(tr_acc_m),
+                "train_fe_corr":   tr_fe_corr,    "train_fe_err":    tr_fe_err,
+                "train_n":         tr_n,
                 "is_best_single":         int(is_best_single),
                 "is_best_bilat":          int(is_best_bilat),
                 "is_best_holdout_single": int(is_best_holdout_single),
                 "is_best_holdout_bilat":  int(is_best_holdout_bilat),
+                **cm_row,
             }, optional_cols=epoch_fields)
 
             if args.log_every > 0 and (epoch + 1) % args.log_every == 0:
@@ -897,6 +1242,27 @@ class V2HyperTower:
                 torch.save(best_holdout_single_state, fold_dir / "best_holdout_single.pt")
             if best_holdout_bilat_state is not None:
                 torch.save(best_holdout_bilat_state, fold_dir / "best_holdout_bilateral.pt")
+
+        # ---- Save per-epoch per-patient npy tensors -------------------------
+        if _epoch_train_pf:
+            # Use the order from the first epoch (consistent since loader is non-shuffled)
+            ids_ref = _epoch_train_ids[0]
+            y_ref   = _epoch_train_y[0]
+            np.save(fold_dir / "train_patient_ids.npy", ids_ref)
+            np.save(fold_dir / "train_y_true.npy",      y_ref)
+            np.save(fold_dir / "train_probs_fused.npy", np.stack(_epoch_train_pf))  # (n_ep, n_pts, n_cls)
+            np.save(fold_dir / "train_probs_img.npy",   np.stack(_epoch_train_pi))
+            np.save(fold_dir / "train_probs_md.npy",    np.stack(_epoch_train_pm))
+        if _epoch_val_pf_od:
+            np.save(fold_dir / "val_y_true_epochs.npy",         np.stack(_epoch_val_y))     # (n_ep, N)
+            np.save(fold_dir / "val_probs_fused_od_epochs.npy", np.stack(_epoch_val_pf_od)) # (n_ep, N, C)
+            np.save(fold_dir / "val_probs_img_od_epochs.npy",   np.stack(_epoch_val_pi_od))
+            np.save(fold_dir / "val_probs_md_od_epochs.npy",    np.stack(_epoch_val_pm_od))
+            np.save(fold_dir / "val_probs_fused_os_epochs.npy", np.stack(_epoch_val_pf_os))
+            np.save(fold_dir / "val_probs_img_os_epochs.npy",   np.stack(_epoch_val_pi_os))
+            np.save(fold_dir / "val_probs_md_os_epochs.npy",    np.stack(_epoch_val_pm_os))
+            if _epoch_val_ids:  # only ensemble mode populates this
+                np.save(fold_dir / "val_patient_ids.npy", _epoch_val_ids[0])
 
         # ---- Phase 2: fused head training (ensemble + --fused-head only) ----
         best_fused_auc        = -1.0
@@ -999,15 +1365,30 @@ class V2HyperTower:
             single.load_state_dict(best_single_state)
         if run_bilat and best_bilat_state is not None:
             bilateral.load_state_dict(best_bilat_state)
+        y_en_pe_best = p_en_pe_best = p_en_pe_best_img = p_en_pe_best_md = None
+        l_en_best = l_en_best_img = l_en_best_md = None
+        l_cl_best = l_cl_best_img = l_cl_best_md = None
+        l_en_pe_best = l_en_pe_best_img = l_en_pe_best_md = None
         if run_single and tower_mode == "single":
-            y_cl_best, p_cl_best = collect_probs_classic(single, val_loader, device)
-            y_en_best = p_en_best = None
+            y_cl_best, p_cl_best, p_cl_best_img, p_cl_best_md, \
+                l_cl_best, l_cl_best_img, l_cl_best_md = collect_probs_single_components(
+                single, val_loader, device, aggregate_patient=False, return_logits=True
+            )
+            y_en_best = p_en_best = p_en_best_img = p_en_best_md = None
         elif run_single and tower_mode == "ensemble":
-            y_en_best, p_en_best = collect_probs_ensemble(single, val_loader, device)
-            y_cl_best = p_cl_best = None
+            y_en_best, p_en_best, p_en_best_img, p_en_best_md, \
+                l_en_best, l_en_best_img, l_en_best_md = collect_probs_single_components(
+                single, val_loader, device, aggregate_patient=True, return_logits=True
+            )
+            y_en_pe_best, p_en_pe_best, p_en_pe_best_img, p_en_pe_best_md, \
+                l_en_pe_best, l_en_pe_best_img, l_en_pe_best_md = collect_probs_single_components(
+                single, val_loader, device, aggregate_patient=False, return_logits=True
+            )
+            y_cl_best = p_cl_best = p_cl_best_img = p_cl_best_md = None
         else:
             y_cl_best = y_en_best = None
-            p_cl_best = p_en_best = None
+            p_cl_best = p_en_best = p_en_best_img = p_en_best_md = None
+            p_cl_best_img = p_cl_best_md = None
         if run_bilat:
             y_bi_best, p_bi_best = collect_probs_bilateral(bilateral, val_loader, device)
         else:
@@ -1077,6 +1458,23 @@ class V2HyperTower:
             y_true_ensemble=y_en_best, probs_ensemble=p_en_best,
             y_true_bilat=y_bi_best,    probs_bilat=p_bi_best,
             y_true_fused=y_fu_best,    probs_fused=p_fu_best,
+            probs_ensemble_img=p_en_best_img,
+            probs_ensemble_md=p_en_best_md,
+            probs_classic_img=p_cl_best_img,
+            probs_classic_md=p_cl_best_md,
+            y_true_ensemble_pereye=y_en_pe_best,
+            probs_ensemble_pereye=p_en_pe_best,
+            probs_ensemble_img_pereye=p_en_pe_best_img,
+            probs_ensemble_md_pereye=p_en_pe_best_md,
+            logits_ensemble=l_en_best,
+            logits_ensemble_img=l_en_best_img,
+            logits_ensemble_md=l_en_best_md,
+            logits_classic=l_cl_best,
+            logits_classic_img=l_cl_best_img,
+            logits_classic_md=l_cl_best_md,
+            logits_ensemble_pereye=l_en_pe_best,
+            logits_ensemble_img_pereye=l_en_pe_best_img,
+            logits_ensemble_md_pereye=l_en_pe_best_md,
         )
 
     # ------------------------------------------------------------------

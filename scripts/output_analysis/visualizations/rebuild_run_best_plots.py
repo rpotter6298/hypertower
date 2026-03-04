@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import matplotlib
 import sys
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 matplotlib.use("Agg")
@@ -70,10 +70,34 @@ def load_summary(run_dir: Path) -> dict:
         return json.load(fh)
 
 
+def resolve_data_dir(raw_dir: str) -> str:
+    """
+    Resolve dataset paths saved in legacy cli_args.json.
+
+    Older runs often store "ClinicalData"/"FundusImages" relative to a
+    dataset root, while current repo layout uses "Papila/<dir>".
+    """
+    p = Path(raw_dir)
+    if p.exists():
+        return str(p)
+
+    candidates = [
+        REPO_ROOT / p,
+        REPO_ROOT / "Papila" / p,
+    ]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+
+    return str(p)
+
+
 def prepare_clinical(cli_args: dict, run_dir: Path) -> tuple:
+    image_dir = resolve_data_dir(cli_args["image_dir"])
+    clinical_dir = resolve_data_dir(cli_args["clinical_dir"])
     clinical = build_papila_clinical(
-        cli_args["image_dir"],
-        cli_args["clinical_dir"],
+        image_dir,
+        clinical_dir,
         cli_args["label_col"],
         cli_args["cat_cols"],
         n_splits=cli_args["n_splits"],
@@ -103,10 +127,12 @@ def prepare_clinical(cli_args: dict, run_dir: Path) -> tuple:
 
 
 def build_ht_args(cli_args: dict, fold: int, run_dir: Path, models_dir: Path, holdout_df):
+    image_dir = resolve_data_dir(cli_args["image_dir"])
+    clinical_dir = resolve_data_dir(cli_args["clinical_dir"])
     # Copy of the training-time namespace so HyperTower can be re-instantiated.
     return SimpleNamespace(
-        image_dir=cli_args["image_dir"],
-        clinical_dir=cli_args["clinical_dir"],
+        image_dir=image_dir,
+        clinical_dir=clinical_dir,
         label_col=cli_args["label_col"],
         cat_cols=cli_args["cat_cols"],
         batch_size=cli_args["batch_size"],
@@ -253,6 +279,14 @@ def choose_head_probs(head: str, probs_f, probs_i, probs_m):
     return probs_i
 
 
+def legacy_probs_suffix(head: str) -> str:
+    if head == "image":
+        return "img"
+    if head == "metadata":
+        return "md"
+    return "fused"
+
+
 def ensure_binary_slice(y_true, *arrays):
     mask = np.isin(y_true, [0, 1])
     filtered = [y_true[mask]]
@@ -264,8 +298,17 @@ def ensure_binary_slice(y_true, *arrays):
     return filtered
 
 
-def plot_overlays(per_fold_curves, out_dir: Path, class_names: list[str], head: str, suffix: str = ""):
+def plot_overlays(
+    per_fold_curves,
+    out_dir: Path,
+    class_names: list[str],
+    head: str,
+    eval_mode: str,
+    suffix: str = "",
+):
     keys = sorted({k for _, curves in per_fold_curves for k in curves.keys()})
+    if eval_mode == "binary":
+        keys = [k for k in keys if k == 1]
     if not keys:
         return
     name_map = {k: (class_names[k] if k < len(class_names) else f"class_{k}") for k in keys}
@@ -293,8 +336,17 @@ def plot_overlays(per_fold_curves, out_dir: Path, class_names: list[str], head: 
         plt.close(fig)
 
 
-def plot_mean_sd(per_fold_curves, out_dir: Path, class_names: list[str], head: str, suffix: str = ""):
+def plot_mean_sd(
+    per_fold_curves,
+    out_dir: Path,
+    class_names: list[str],
+    head: str,
+    eval_mode: str,
+    suffix: str = "",
+):
     keys = sorted({k for _, curves in per_fold_curves for k in curves.keys()})
+    if eval_mode == "binary":
+        keys = [k for k in keys if k == 1]
     if not keys:
         return
     grid = np.linspace(0, 1, 501)
@@ -363,10 +415,43 @@ def main():
             print(f"[skip] Fold {fold_idx}: no best_epoch recorded.")
             continue
 
+        # Prefer saved fold arrays when available. This avoids reconstructing
+        # HyperTower for legacy runs whose external weight paths no longer exist.
+        base = run_dir / f"fold{fold_idx}{file_suffix}"
+        y_path = Path(f"{base}_y_true.npy")
+        p_path = Path(f"{base}_probs_{legacy_probs_suffix(head)}.npy")
+        if y_path.exists() and p_path.exists():
+            y_true = np.load(y_path)
+            head_probs = np.load(p_path)
+            if cli_args["eval_mode"] == "binary" and head_probs.shape[1] >= 2:
+                head_probs = head_probs[:, :2]
+            curves = compute_per_class_curves(y_true, head_probs)
+            per_fold_curves.append((fold_idx, curves))
+            try:
+                if head_probs.shape[1] > 2:
+                    fold_auc = roc_auc_score(y_true, head_probs, multi_class="ovr", average="macro")
+                else:
+                    target_scores = head_probs[:, 1] if head_probs.shape[1] > 1 else head_probs[:, 0]
+                    fold_auc = roc_auc_score(y_true, target_scores)
+                fold_aucs.append(fold_auc)
+                print(
+                    f"[info] Fold {fold_idx}: using saved arrays "
+                    f"({y_path.name}, {p_path.name}), AUC={fold_auc:.4f}"
+                )
+            except Exception:
+                print(
+                    f"[warning] Fold {fold_idx}: using saved arrays "
+                    f"({y_path.name}, {p_path.name}) but AUC failed."
+                )
+            continue
+
         fold_models_dir = base_models_dir / f"fold{fold_idx}"
         best_checkpoint = fold_models_dir / "model_best.pt"
         if not best_checkpoint.exists():
-            print(f"[warning] Fold {fold_idx}: missing model_best.pt at {best_checkpoint}")
+            print(
+                f"[warning] Fold {fold_idx}: missing model_best.pt at {best_checkpoint} "
+                f"and missing fallback arrays {y_path.name}/{p_path.name}"
+            )
             continue
 
         ht_args = build_ht_args(cli_args, fold_idx, run_dir, fold_models_dir, holdout_df)
@@ -435,8 +520,8 @@ def main():
         raise SystemExit("No folds processed; nothing to plot.")
 
     plots_dir = run_dir / "plots"
-    plot_overlays(per_fold_curves, plots_dir, class_names, head, file_suffix)
-    plot_mean_sd(per_fold_curves, plots_dir, class_names, head, file_suffix)
+    plot_overlays(per_fold_curves, plots_dir, class_names, head, cli_args["eval_mode"], file_suffix)
+    plot_mean_sd(per_fold_curves, plots_dir, class_names, head, cli_args["eval_mode"], file_suffix)
 
     if fold_aucs:
         print(f"[info] {head} head mean AUC across folds: {np.mean(fold_aucs):.4f} ± {np.std(fold_aucs):.4f}")

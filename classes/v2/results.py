@@ -109,3 +109,23 @@ class FoldArtifacts:
     probs_bilat:     Optional[np.ndarray]
     y_true_fused:    Optional[np.ndarray] = None
     probs_fused:     Optional[np.ndarray] = None
+    probs_ensemble_img: Optional[np.ndarray] = None
+    probs_ensemble_md:  Optional[np.ndarray] = None
+    probs_classic_img:  Optional[np.ndarray] = None
+    probs_classic_md:   Optional[np.ndarray] = None
+    # per-eye (pre-averaged) versions for ensemble mode
+    y_true_ensemble_pereye:    Optional[np.ndarray] = None
+    probs_ensemble_pereye:     Optional[np.ndarray] = None
+    probs_ensemble_img_pereye: Optional[np.ndarray] = None
+    probs_ensemble_md_pereye:  Optional[np.ndarray] = None
+    # raw logits (before softmax) — patient-level
+    logits_ensemble:     Optional[np.ndarray] = None
+    logits_ensemble_img: Optional[np.ndarray] = None
+    logits_ensemble_md:  Optional[np.ndarray] = None
+    logits_classic:      Optional[np.ndarray] = None
+    logits_classic_img:  Optional[np.ndarray] = None
+    logits_classic_md:   Optional[np.ndarray] = None
+    # raw logits — per-eye
+    logits_ensemble_pereye:     Optional[np.ndarray] = None
+    logits_ensemble_img_pereye: Optional[np.ndarray] = None
+    logits_ensemble_md_pereye:  Optional[np.ndarray] = None

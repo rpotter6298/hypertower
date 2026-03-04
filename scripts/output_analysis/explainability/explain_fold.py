@@ -197,20 +197,30 @@ def run_permutation_importance(
 ) -> None:
     print("\n[Phase 1] MD permutation importance ...", flush=True)
 
-    # ---- cache image embeddings + collect meta tensors + labels ----
-    img_feats_list, md_list, label_list = [], [], []
+    # ---- cache bilateral image embeddings + metadata tensors + labels ----
+    img1_feats_list, img2_feats_list = [], []
+    md1_list, md2_list, label_list = [], [], []
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            imgs = batch["image_1"].to(device)
-            meta = batch["matrix_1"].to(device)
+            img1 = batch["image_1"].to(device)
+            img2 = batch["image_2"].to(device)
+            md1 = batch["matrix_1"].to(device)
+            md2 = batch["matrix_2"].to(device)
             labels = batch["label_1"]
-            img_feats_list.append(model.img_tower(imgs))
-            md_list.append(meta)
-            label_list.append(labels)
+            img1_feats_list.append(model.img_tower(img1))
+            img2_feats_list.append(model.img_tower(img2))
+            md1_list.append(md1)
+            md2_list.append(md2)
+            if isinstance(labels, torch.Tensor):
+                label_list.append(labels)
+            else:
+                label_list.append(torch.tensor(labels, dtype=torch.long))
 
-    img_feats = torch.cat(img_feats_list)  # [N, img_dim]
-    md_tensor = torch.cat(md_list)  # [N, feature_dim]
+    img1_feats = torch.cat(img1_feats_list)  # [N, img_dim]
+    img2_feats = torch.cat(img2_feats_list)  # [N, img_dim]
+    md1_tensor = torch.cat(md1_list)  # [N, feature_dim]
+    md2_tensor = torch.cat(md2_list)  # [N, feature_dim]
     y_true = torch.cat(label_list).numpy()
     N = len(y_true)
 
@@ -218,11 +228,15 @@ def run_permutation_importance(
         print("  [Phase 1] No samples — skipping.", flush=True)
         return
 
-    # ---- baseline AUC ----
+    # ---- baseline AUC (patient-level: average OD/OS fused probabilities) ----
     with torch.no_grad():
-        md_feats = model.md_tower(md_tensor)
-        fused, _, _ = model.bridge(img_feats, md_feats)
-        probs_baseline = torch.softmax(fused, dim=1).cpu().numpy()
+        md1_feats = model.md_tower(md1_tensor)
+        md2_feats = model.md_tower(md2_tensor)
+        fused1, _, _ = model.bridge(img1_feats, md1_feats)
+        fused2, _, _ = model.bridge(img2_feats, md2_feats)
+        probs_baseline = (
+            0.5 * (torch.softmax(fused1, dim=1) + torch.softmax(fused2, dim=1))
+        ).cpu().numpy()
     _, baseline_auc, _ = _score_arrays(y_true, probs_baseline, num_classes)
     print(f"  Baseline AUC: {baseline_auc:.4f}  (N={N})", flush=True)
 
@@ -235,13 +249,25 @@ def run_permutation_importance(
         all_dims = dims["value_dims"] + dims["missing_dims"]
         drops = []
         for _ in range(n_permutations):
-            perm = md_tensor.clone()
+            perm1 = md1_tensor.clone()
+            perm2 = md2_tensor.clone()
             perm_idx = torch.from_numpy(rng.permutation(N)).to(device)
-            perm[:, all_dims] = perm[perm_idx][:, all_dims]
+            # Apply the same donor patient permutation to both eyes to preserve
+            # within-patient coherence while breaking feature-label association.
+            perm1[:, all_dims] = perm1[perm_idx][:, all_dims]
+            perm2[:, all_dims] = perm2[perm_idx][:, all_dims]
             with torch.no_grad():
-                md_p = model.md_tower(perm)
-                fused_p, _, _ = model.bridge(img_feats, md_p)
-                probs_p = torch.softmax(fused_p, dim=1).cpu().numpy()
+                md1_p = model.md_tower(perm1)
+                md2_p = model.md_tower(perm2)
+                fused1_p, _, _ = model.bridge(img1_feats, md1_p)
+                fused2_p, _, _ = model.bridge(img2_feats, md2_p)
+                probs_p = (
+                    0.5
+                    * (
+                        torch.softmax(fused1_p, dim=1)
+                        + torch.softmax(fused2_p, dim=1)
+                    )
+                ).cpu().numpy()
             _, auc_p, _ = _score_arrays(y_true, probs_p, num_classes)
             drops.append(baseline_auc - auc_p)
 
@@ -254,6 +280,56 @@ def run_permutation_importance(
 
     results.sort(key=lambda r: r["importance"], reverse=True)
 
+    # ---- total MD ablation (all features permuted simultaneously) ----
+    print("  Running total MD ablation ...", flush=True)
+    total_drops = []
+    for _ in range(n_permutations):
+        perm_idx = torch.from_numpy(rng.permutation(N)).to(device)
+        perm1_all = md1_tensor[perm_idx]
+        perm2_all = md2_tensor[perm_idx]
+        with torch.no_grad():
+            md1_all = model.md_tower(perm1_all)
+            md2_all = model.md_tower(perm2_all)
+            f1, _, _ = model.bridge(img1_feats, md1_all)
+            f2, _, _ = model.bridge(img2_feats, md2_all)
+            probs_all = (
+                0.5 * (torch.softmax(f1, dim=1) + torch.softmax(f2, dim=1))
+            ).cpu().numpy()
+        _, auc_all, _ = _score_arrays(y_true, probs_all, num_classes)
+        total_drops.append(baseline_auc - auc_all)
+    total_mean = float(np.mean(total_drops))
+    total_std = float(np.std(total_drops))
+    print(
+        f"  Total MD ablation  Δ AUC = {total_mean:+.4f} ± {total_std:.4f}", flush=True
+    )
+
+    # ---- Gaussian noise ablation (tests architectural vs informational benefit) ----
+    print("  Running Gaussian noise ablation ...", flush=True)
+    noise_drops = []
+    for _ in range(n_permutations):
+        noise1 = torch.randn_like(md1_tensor)
+        noise2 = torch.randn_like(md2_tensor)
+        with torch.no_grad():
+            md1_noise = model.md_tower(noise1)
+            md2_noise = model.md_tower(noise2)
+            f1, _, _ = model.bridge(img1_feats, md1_noise)
+            f2, _, _ = model.bridge(img2_feats, md2_noise)
+            probs_noise = (
+                0.5 * (torch.softmax(f1, dim=1) + torch.softmax(f2, dim=1))
+            ).cpu().numpy()
+        _, auc_noise, _ = _score_arrays(y_true, probs_noise, num_classes)
+        noise_drops.append(baseline_auc - auc_noise)
+    noise_mean = float(np.mean(noise_drops))
+    noise_std = float(np.std(noise_drops))
+    print(
+        f"  Gaussian noise ablation  Δ AUC = {noise_mean:+.4f} ± {noise_std:.4f}", flush=True
+    )
+    print(
+        f"  [interpretation] permutation Δ={total_mean:+.4f}  noise Δ={noise_mean:+.4f}  "
+        f"informational gain = {total_mean - noise_mean:+.4f}",
+        flush=True,
+    )
+
     # ---- save CSV ----
     import csv
 
@@ -262,6 +338,8 @@ def run_permutation_importance(
         writer = csv.DictWriter(f, fieldnames=["feature", "importance", "std"])
         writer.writeheader()
         writer.writerows(results)
+        writer.writerow({"feature": "TOTAL_MD_ABLATION", "importance": total_mean, "std": total_std})
+        writer.writerow({"feature": "GAUSSIAN_NOISE_ABLATION", "importance": noise_mean, "std": noise_std})
 
     # ---- bar chart ----
     names = [r["feature"] for r in results]
@@ -269,13 +347,26 @@ def run_permutation_importance(
     stds = [r["std"] for r in results]
     colors = ["#e05c5c" if v >= 0 else "#5c9ee0" for v in imps]
 
-    fig, ax = plt.subplots(figsize=(9, max(4, len(names) * 0.45)))
+    fig, ax = plt.subplots(figsize=(9, max(4, (len(names) + 3) * 0.45)))
     y_pos = np.arange(len(names))
-    bars = ax.barh(
+    ax.barh(
         y_pos, imps, xerr=stds, color=colors, ecolor="grey", capsize=3, height=0.6
     )
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(names, fontsize=9)
+    ax.axhline(len(names) - 0.25, color="grey", linewidth=0.6, linestyle="--")
+    # total ablation
+    ax.barh(
+        len(names) + 0.5, total_mean, xerr=total_std,
+        color="#c45ce0" if total_mean >= 0 else "#5c9ee0",
+        ecolor="grey", capsize=3, height=0.6,
+    )
+    # gaussian noise ablation
+    ax.barh(
+        len(names) + 1.5, noise_mean, xerr=noise_std,
+        color="#e08c2a" if noise_mean >= 0 else "#5c9ee0",
+        ecolor="grey", capsize=3, height=0.6,
+    )
+    ax.set_yticks(list(y_pos) + [len(names) + 0.5, len(names) + 1.5])
+    ax.set_yticklabels(names + ["ALL MD (permute)", "ALL MD (noise)"], fontsize=9)
     ax.invert_yaxis()
     ax.axvline(0, color="black", linewidth=0.8)
     ax.set_xlabel("Mean AUC drop (baseline − permuted)", fontsize=10)
@@ -325,7 +416,8 @@ def run_gradcam(
         img_os = batch["image_2"].to(device)  # [1, 3, H, W]
         meta_od = batch["matrix_1"].to(device)  # [1, feature_dim]
         meta_os = batch["matrix_2"].to(device)
-        label = int(batch["label_1"][0].item())
+        lbl_raw = batch["label_1"][0]
+        label = int(lbl_raw.item() if isinstance(lbl_raw, torch.Tensor) else lbl_raw)
         pid = batch["id_1"][0]
 
         # GradCAM for each eye (OD drives the prediction label)
@@ -488,7 +580,147 @@ def parse_args():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--no-phase1", action="store_true", help="Skip MD importance")
     ap.add_argument("--no-phase2", action="store_true", help="Skip GradCAM")
+    ap.add_argument("--no-phase3", action="store_true", help="Skip fusion event analysis")
     return ap.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Fusion event analysis
+# ---------------------------------------------------------------------------
+
+
+def run_fusion_event_analysis(
+    model: SingleEyeHT,
+    loader,
+    device: torch.device,
+    out_dir: Path,
+) -> None:
+    print("\n[Phase 3] Fusion event analysis ...", flush=True)
+
+    from classes.v2.models import collect_probs_single_components
+
+    y_true, pf, pi, pm = collect_probs_single_components(
+        model, loader, device, aggregate_patient=True
+    )
+    N = len(y_true)
+    if N == 0:
+        print("  [Phase 3] No samples — skipping.", flush=True)
+        return
+
+    pred_f = pf.argmax(axis=1)
+    pred_i = pi.argmax(axis=1)
+    pred_m = pm.argmax(axis=1)
+
+    corrections = (pred_f == y_true) & (pred_i != y_true) & (pred_m != y_true)
+    errors      = (pred_f != y_true) & (pred_i == y_true) & (pred_m == y_true)
+    n_corr = corrections.sum()
+    n_err  = errors.sum()
+    both_wrong   = ((pred_i != y_true) & (pred_m != y_true)).sum()
+    both_correct = ((pred_i == y_true) & (pred_m == y_true)).sum()
+
+    print(f"  N={N}  corrections={n_corr}  errors={n_err}  ratio={n_corr}/{n_err}", flush=True)
+    print(f"  correction rate: {n_corr}/{both_wrong} = {n_corr/max(both_wrong,1):.2%} of both-wrong cases", flush=True)
+    print(f"  error rate:      {n_err}/{both_correct} = {n_err/max(both_correct,1):.2%} of both-correct cases", flush=True)
+
+    # ---- cache intermediate hm/hi vectors for all patients ----
+    model.eval()
+    hm1_list, hm2_list, hi1_list, hi2_list = [], [], [], []
+    with torch.no_grad():
+        for batch in loader:
+            x1 = batch.get("image_1"); m1 = batch.get("matrix_1")
+            x2 = batch.get("image_2"); m2 = batch.get("matrix_2")
+            if not (torch.is_tensor(x1) and torch.is_tensor(m1)):
+                continue
+            hi1 = model.bridge.ln_img(model.bridge.W_img(model.img_tower(x1.to(device))))
+            hi2 = model.bridge.ln_img(model.bridge.W_img(model.img_tower(x2.to(device))))
+            hm1 = model.bridge.ln_md(model.bridge.W_md(model.md_tower(m1.to(device))))
+            hm2 = model.bridge.ln_md(model.bridge.W_md(model.md_tower(m2.to(device))))
+            hi1_list.append(hi1.cpu()); hi2_list.append(hi2.cpu())
+            hm1_list.append(hm1.cpu()); hm2_list.append(hm2.cpu())
+
+    hi1 = torch.cat(hi1_list)  # [N, fusion_dim]
+    hi2 = torch.cat(hi2_list)
+    hm1 = torch.cat(hm1_list)  # [N, fusion_dim]
+    hm2 = torch.cat(hm2_list)
+
+    hm1_mean = hm1.mean(dim=0, keepdim=True)
+    hm2_mean = hm2.mean(dim=0, keepdim=True)
+
+    # ---- for each patient: compare logit[true_class] with real hm vs mean hm ----
+    gains = []
+    with torch.no_grad():
+        for idx in range(N):
+            true_cls = int(y_true[idx])
+            # patient-level average of OD/OS fused vectors (SE skipped: hard to replicate outside forward)
+            fused_real = (hi1[idx:idx+1] * hm1[idx:idx+1] + hi2[idx:idx+1] * hm2[idx:idx+1]) * 0.5
+            fused_mean = (hi1[idx:idx+1] * hm1_mean + hi2[idx:idx+1] * hm2_mean) * 0.5
+            logit_real = model.bridge.classifier_fused(fused_real.to(device))
+            logit_mean = model.bridge.classifier_fused(fused_mean.to(device))
+            gain = (logit_real[0, true_cls] - logit_mean[0, true_cls]).item()
+            gains.append(gain)
+
+    gains = np.array(gains)
+
+    if n_corr > 0:
+        corr_gains = gains[corrections]
+        helped = (corr_gains > 0).sum()
+        print(f"\n  Fusion corrections — MD gate gain vs mean gate:", flush=True)
+        print(f"    mean gain = {corr_gains.mean():+.4f}  median = {np.median(corr_gains):+.4f}", flush=True)
+        print(f"    real MD helped {helped}/{n_corr} correction patients ({helped/n_corr:.0%})", flush=True)
+
+    if n_err > 0:
+        err_gains = gains[errors]
+        print(f"\n  Fusion errors — MD gate gain vs mean gate:", flush=True)
+        print(f"    mean gain = {err_gains.mean():+.4f}  median = {np.median(err_gains):+.4f}", flush=True)
+
+    # ---- save CSV ----
+    import csv
+    rows = []
+    for idx in range(N):
+        rows.append({
+            "patient_idx": idx,
+            "y_true": int(y_true[idx]),
+            "pred_fused": int(pred_f[idx]),
+            "pred_img": int(pred_i[idx]),
+            "pred_md": int(pred_m[idx]),
+            "conf_fused": float(pf[idx].max()),
+            "conf_img": float(pi[idx].max()),
+            "conf_md": float(pm[idx].max()),
+            "is_correction": bool(corrections[idx]),
+            "is_error": bool(errors[idx]),
+            "md_gate_gain": float(gains[idx]),
+        })
+    csv_path = out_dir / "fusion_events.csv"
+    with csv_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"  Saved → {csv_path}", flush=True)
+
+    # ---- chart ----
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+
+    categories = ["corrections\n(both wrong→fused right)", "errors\n(both right→fused wrong)"]
+    counts = [int(n_corr), int(n_err)]
+    axes[0].bar(categories, counts, color=["#e05c5c", "#5c9ee0"], width=0.5)
+    axes[0].set_ylabel("Count")
+    axes[0].set_title(f"Fusion Events  (N={N})")
+    for i, v in enumerate(counts):
+        axes[0].text(i, v + 0.1, str(v), ha="center", fontsize=11)
+
+    if n_corr > 0:
+        axes[1].hist(gains[corrections], bins=10, alpha=0.7, color="#e05c5c", label=f"corrections (n={n_corr})")
+    if n_err > 0:
+        axes[1].hist(gains[errors], bins=10, alpha=0.7, color="#5c9ee0", label=f"errors (n={n_err})")
+    axes[1].axvline(0, color="black", linewidth=0.8)
+    axes[1].set_xlabel("MD gate gain vs mean gate\n(logit[true class]: real − mean)")
+    axes[1].set_title("Does real MD help the fused prediction?")
+    axes[1].legend(fontsize=9)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "fusion_events.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved → {out_dir / 'fusion_events.png'}", flush=True)
 
 
 def main():
@@ -636,6 +868,15 @@ def main():
             backbone=backbone,
             device=device,
             alpha=args.alpha,
+            out_dir=out_dir,
+        )
+
+    # ---- Phase 3 ----
+    if not args.no_phase3:
+        run_fusion_event_analysis(
+            model=model,
+            loader=loader,
+            device=device,
             out_dir=out_dir,
         )
 
