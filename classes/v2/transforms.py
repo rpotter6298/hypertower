@@ -7,7 +7,7 @@ from PIL import Image
 
 from torchvision import transforms
 
-from classes.backbones import BACKBONES
+from classes.v2.backbones import BACKBONES
 
 
 IMAGENET_MEAN: Tuple[float, float, float] = (0.485, 0.456, 0.406)

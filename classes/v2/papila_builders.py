@@ -33,10 +33,21 @@ def _nearest_pachy_key(x: float) -> int:
     return int(_PACHY_KEYS[idx])
 
 
+# Ratio derived from patients with both Pneumatic and Perkins readings (n=41, OD+OS combined).
+# Pneumatic / Perkins mean ratio = 1.158; applied to Perkins-only rows to put them on the
+# Pneumatic scale before IOP_corr is computed.
+_PERKINS_TO_PNEUMATIC_RATIO: float = 1.158
+
+
 def _pick_iop(row: pd.Series) -> float:
-    """Prefer Pneumatic, else Perkins; may return NaN."""
-    raw = row["Pneumatic"] if not pd.isna(row.get("Pneumatic", np.nan)) else row.get("Perkins", np.nan)
-    return float(raw) if not pd.isna(raw) else np.nan
+    """Prefer Pneumatic; scale Perkins to Pneumatic scale if Pneumatic is absent."""
+    pneumatic = row.get("Pneumatic", np.nan)
+    if not pd.isna(pneumatic):
+        return float(pneumatic)
+    perkins = row.get("Perkins", np.nan)
+    if not pd.isna(perkins):
+        return float(perkins) * _PERKINS_TO_PNEUMATIC_RATIO
+    return np.nan
 
 
 def _correct_iop(raw_iop: float, pachy: float) -> float:

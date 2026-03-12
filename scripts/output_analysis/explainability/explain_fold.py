@@ -611,84 +611,70 @@ def run_fusion_event_analysis(
     pred_i = pi.argmax(axis=1)
     pred_m = pm.argmax(axis=1)
 
-    corrections = (pred_f == y_true) & (pred_i != y_true) & (pred_m != y_true)
-    errors      = (pred_f != y_true) & (pred_i == y_true) & (pred_m == y_true)
-    n_corr = corrections.sum()
-    n_err  = errors.sum()
-    both_wrong   = ((pred_i != y_true) & (pred_m != y_true)).sum()
-    both_correct = ((pred_i == y_true) & (pred_m == y_true)).sum()
+    # confidence of the predicted class for each head
+    conf_f = np.take_along_axis(pf, pred_f[:, None], axis=1).squeeze(1)
+    conf_i = np.take_along_axis(pi, pred_i[:, None], axis=1).squeeze(1)
+    conf_m = np.take_along_axis(pm, pred_m[:, None], axis=1).squeeze(1)
+    # how much did fusion shift confidence vs the average of the two towers?
+    conf_delta = conf_f - 0.5 * (conf_i + conf_m)
 
-    print(f"  N={N}  corrections={n_corr}  errors={n_err}  ratio={n_corr}/{n_err}", flush=True)
-    print(f"  correction rate: {n_corr}/{both_wrong} = {n_corr/max(both_wrong,1):.2%} of both-wrong cases", flush=True)
-    print(f"  error rate:      {n_err}/{both_correct} = {n_err/max(both_correct,1):.2%} of both-correct cases", flush=True)
+    f_ok = pred_f == y_true
+    i_ok = pred_i == y_true
+    m_ok = pred_m == y_true
 
-    # ---- cache intermediate hm/hi vectors for all patients ----
-    model.eval()
-    hm1_list, hm2_list, hi1_list, hi2_list = [], [], [], []
-    with torch.no_grad():
-        for batch in loader:
-            x1 = batch.get("image_1"); m1 = batch.get("matrix_1")
-            x2 = batch.get("image_2"); m2 = batch.get("matrix_2")
-            if not (torch.is_tensor(x1) and torch.is_tensor(m1)):
-                continue
-            hi1 = model.bridge.ln_img(model.bridge.W_img(model.img_tower(x1.to(device))))
-            hi2 = model.bridge.ln_img(model.bridge.W_img(model.img_tower(x2.to(device))))
-            hm1 = model.bridge.ln_md(model.bridge.W_md(model.md_tower(m1.to(device))))
-            hm2 = model.bridge.ln_md(model.bridge.W_md(model.md_tower(m2.to(device))))
-            hi1_list.append(hi1.cpu()); hi2_list.append(hi2.cpu())
-            hm1_list.append(hm1.cpu()); hm2_list.append(hm2.cpu())
+    # 6 non-trivial bridge-effect event types
+    full_correction = f_ok  & ~i_ok & ~m_ok   # both towers wrong → fused right
+    img_assist      = f_ok  & ~i_ok &  m_ok   # img wrong, md right → fused right  (md carried it)
+    md_assist       = f_ok  &  i_ok & ~m_ok   # md wrong, img right → fused right  (img carried it)
+    full_error      = ~f_ok &  i_ok &  m_ok   # both towers right  → fused wrong
+    img_drag        = ~f_ok & ~i_ok &  m_ok   # img wrong, md right → fused wrong  (img dragged it down)
+    md_drag         = ~f_ok &  i_ok & ~m_ok   # md wrong, img right → fused wrong  (md dragged it down)
+    concordant_ok   =  f_ok &  i_ok &  m_ok
+    concordant_bad  = ~f_ok & ~i_ok & ~m_ok
 
-    hi1 = torch.cat(hi1_list)  # [N, fusion_dim]
-    hi2 = torch.cat(hi2_list)
-    hm1 = torch.cat(hm1_list)  # [N, fusion_dim]
-    hm2 = torch.cat(hm2_list)
+    event_labels  = [
+        "full correction\n(both wrong→fused right)",
+        "img assist\n(img wrong, md right→right)",
+        "md assist\n(md wrong, img right→right)",
+        "full error\n(both right→fused wrong)",
+        "img drag\n(img wrong, md right→wrong)",
+        "md drag\n(md wrong, img right→wrong)",
+    ]
+    event_masks  = [full_correction, img_assist, md_assist, full_error, img_drag, md_drag]
+    event_colors = ["#2ca02c", "#98df8a", "#b5d46e", "#d62728", "#ff9896", "#ffbf9b"]
+    event_keys   = ["full_correction", "img_assist", "md_assist",
+                    "full_error", "img_drag", "md_drag"]
+    counts = [int(m.sum()) for m in event_masks]
 
-    hm1_mean = hm1.mean(dim=0, keepdim=True)
-    hm2_mean = hm2.mean(dim=0, keepdim=True)
+    print(f"  N={N}", flush=True)
+    for label, count in zip(event_labels, counts):
+        print(f"  {label.replace(chr(10), ' '):55s}: {count}", flush=True)
+    n_corr, n_err = counts[0], counts[3]
+    ratio_str = f"{n_corr}/{n_err}" if n_err > 0 else f"{n_corr}/0"
+    print(f"  full correction/error ratio: {ratio_str}", flush=True)
+    print(f"  conf_delta  mean={conf_delta.mean():+.4f}  median={np.median(conf_delta):+.4f}",
+          flush=True)
 
-    # ---- for each patient: compare logit[true_class] with real hm vs mean hm ----
-    gains = []
-    with torch.no_grad():
-        for idx in range(N):
-            true_cls = int(y_true[idx])
-            # patient-level average of OD/OS fused vectors (SE skipped: hard to replicate outside forward)
-            fused_real = (hi1[idx:idx+1] * hm1[idx:idx+1] + hi2[idx:idx+1] * hm2[idx:idx+1]) * 0.5
-            fused_mean = (hi1[idx:idx+1] * hm1_mean + hi2[idx:idx+1] * hm2_mean) * 0.5
-            logit_real = model.bridge.classifier_fused(fused_real.to(device))
-            logit_mean = model.bridge.classifier_fused(fused_mean.to(device))
-            gain = (logit_real[0, true_cls] - logit_mean[0, true_cls]).item()
-            gains.append(gain)
-
-    gains = np.array(gains)
-
-    if n_corr > 0:
-        corr_gains = gains[corrections]
-        helped = (corr_gains > 0).sum()
-        print(f"\n  Fusion corrections — MD gate gain vs mean gate:", flush=True)
-        print(f"    mean gain = {corr_gains.mean():+.4f}  median = {np.median(corr_gains):+.4f}", flush=True)
-        print(f"    real MD helped {helped}/{n_corr} correction patients ({helped/n_corr:.0%})", flush=True)
-
-    if n_err > 0:
-        err_gains = gains[errors]
-        print(f"\n  Fusion errors — MD gate gain vs mean gate:", flush=True)
-        print(f"    mean gain = {err_gains.mean():+.4f}  median = {np.median(err_gains):+.4f}", flush=True)
-
-    # ---- save CSV ----
+    # ---- CSV ----
     import csv
+    event_type = np.where(concordant_ok, "concordant_correct",
+                 np.where(concordant_bad, "concordant_wrong", "other")).astype(object)
+    for mask, key in zip(event_masks, event_keys):
+        event_type[mask] = key
+
     rows = []
     for idx in range(N):
         rows.append({
-            "patient_idx": idx,
-            "y_true": int(y_true[idx]),
-            "pred_fused": int(pred_f[idx]),
-            "pred_img": int(pred_i[idx]),
-            "pred_md": int(pred_m[idx]),
-            "conf_fused": float(pf[idx].max()),
-            "conf_img": float(pi[idx].max()),
-            "conf_md": float(pm[idx].max()),
-            "is_correction": bool(corrections[idx]),
-            "is_error": bool(errors[idx]),
-            "md_gate_gain": float(gains[idx]),
+            "patient_idx":  idx,
+            "y_true":       int(y_true[idx]),
+            "pred_fused":   int(pred_f[idx]),
+            "pred_img":     int(pred_i[idx]),
+            "pred_md":      int(pred_m[idx]),
+            "conf_fused":   float(conf_f[idx]),
+            "conf_img":     float(conf_i[idx]),
+            "conf_md":      float(conf_m[idx]),
+            "conf_delta":   float(conf_delta[idx]),
+            "event_type":   event_type[idx],
         })
     csv_path = out_dir / "fusion_events.csv"
     with csv_path.open("w", newline="") as f:
@@ -697,25 +683,61 @@ def run_fusion_event_analysis(
         writer.writerows(rows)
     print(f"  Saved → {csv_path}", flush=True)
 
-    # ---- chart ----
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    # ---- plot ----
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
 
-    categories = ["corrections\n(both wrong→fused right)", "errors\n(both right→fused wrong)"]
-    counts = [int(n_corr), int(n_err)]
-    axes[0].bar(categories, counts, color=["#e05c5c", "#5c9ee0"], width=0.5)
+    # Panel 1: stacked bar — positive events vs negative events
+    pos_counts = counts[:3]
+    neg_counts  = counts[3:]
+    pos_colors  = event_colors[:3]
+    neg_colors  = event_colors[3:]
+    for bar_x, bar_counts, bar_colors in ((0, pos_counts, pos_colors),
+                                           (1, neg_counts, neg_colors)):
+        bot = 0
+        for c, col in zip(bar_counts, bar_colors):
+            axes[0].bar(bar_x, c, bottom=bot, color=col, width=0.5)
+            if c > 0:
+                axes[0].text(bar_x, bot + c / 2, str(c), ha="center", va="center",
+                             fontsize=9, fontweight="bold")
+            bot += c
+    axes[0].set_xticks([0, 1])
+    axes[0].set_xticklabels(["Positive\nevents", "Negative\nevents"])
     axes[0].set_ylabel("Count")
     axes[0].set_title(f"Fusion Events  (N={N})")
-    for i, v in enumerate(counts):
-        axes[0].text(i, v + 0.1, str(v), ha="center", fontsize=11)
+    patches = [mpatches.Patch(color=c, label=l.replace("\n", " "))
+               for c, l in zip(event_colors, event_labels)]
+    axes[0].legend(handles=patches, fontsize=6, loc="upper right")
 
-    if n_corr > 0:
-        axes[1].hist(gains[corrections], bins=10, alpha=0.7, color="#e05c5c", label=f"corrections (n={n_corr})")
-    if n_err > 0:
-        axes[1].hist(gains[errors], bins=10, alpha=0.7, color="#5c9ee0", label=f"errors (n={n_err})")
-    axes[1].axvline(0, color="black", linewidth=0.8)
-    axes[1].set_xlabel("MD gate gain vs mean gate\n(logit[true class]: real − mean)")
-    axes[1].set_title("Does real MD help the fused prediction?")
-    axes[1].legend(fontsize=9)
+    # Panel 2: conf_delta boxplot per event type (only non-empty)
+    box_data   = [conf_delta[m] for m in event_masks if m.sum() > 0]
+    box_labels = [l.split("\n")[0] for m, l in zip(event_masks, event_labels) if m.sum() > 0]
+    box_cols   = [c for m, c in zip(event_masks, event_colors) if m.sum() > 0]
+    if box_data:
+        bp = axes[1].boxplot(box_data, patch_artist=True, widths=0.5)
+        for patch, color in zip(bp["boxes"], box_cols):
+            patch.set_facecolor(color)
+        axes[1].set_xticks(range(1, len(box_labels) + 1))
+        axes[1].set_xticklabels(box_labels, rotation=35, ha="right", fontsize=7)
+    axes[1].axhline(0, color="black", linewidth=0.8, linestyle="--")
+    axes[1].set_ylabel("conf_delta\n(fused − avg(img, md))")
+    axes[1].set_title("Confidence delta by event type")
+
+    # Panel 3: img vs md confidence space, coloured by event type
+    for mask, color, label in zip(event_masks, event_colors, event_labels):
+        if mask.sum() > 0:
+            axes[2].scatter(conf_i[mask], conf_m[mask], c=color,
+                            label=label.split("\n")[0], alpha=0.85, s=45, edgecolors="none")
+    if concordant_ok.sum() > 0:
+        axes[2].scatter(conf_i[concordant_ok], conf_m[concordant_ok],
+                        c="lightgrey", alpha=0.4, s=20, edgecolors="none", label="concordant correct")
+    if concordant_bad.sum() > 0:
+        axes[2].scatter(conf_i[concordant_bad], conf_m[concordant_bad],
+                        c="darkgrey", alpha=0.4, s=20, edgecolors="none", label="concordant wrong")
+    axes[2].plot([0, 1], [0, 1], "k--", linewidth=0.5, alpha=0.4)
+    axes[2].set_xlabel("conf_img")
+    axes[2].set_ylabel("conf_md")
+    axes[2].set_title("Tower confidence space\ncoloured by fusion event")
+    axes[2].legend(fontsize=6, loc="lower right")
 
     fig.tight_layout()
     fig.savefig(out_dir / "fusion_events.png", dpi=150)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from classes.SE_attention import SEBlock, SEGateLogger
+from classes.v2.SE_attention import SEBlock, SEGateLogger
 
 
 class Bridge(nn.Module):

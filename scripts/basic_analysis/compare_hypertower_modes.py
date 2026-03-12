@@ -45,6 +45,13 @@ def main():
             if not first_run:
                 cli.append("--persist-img-crop-cache")
             args = base_parser.parse_args(cli)
+            # Skip if this mode is already fully complete.
+            if args.run_name:
+                tm_dir = Path(args.output_root) / args.run_name / eval_mode / tower_mode
+                if (tm_dir / "summary.json").exists():
+                    print(f"[compare] {eval_mode}:{tower_mode} already complete — skipping.")
+                    first_run = False  # treat as done so cache is preserved for later runs
+                    continue
             V2HyperTower(args).run()
             first_run = False
 

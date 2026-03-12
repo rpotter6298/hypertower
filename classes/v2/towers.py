@@ -7,8 +7,8 @@ import torch
 from torch import nn
 from torchvision import transforms
 
-from classes.backbones import BACKBONES, list_names, load_backbone_weights
-from classes.SE_attention import SEBlock
+from classes.v2.backbones import BACKBONES, list_names, load_backbone_weights
+from classes.v2.SE_attention import SEBlock
 from classes.v2.data_bundle import DataBundle
 
 

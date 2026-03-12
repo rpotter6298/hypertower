@@ -10,9 +10,30 @@ import torch
 from PIL import Image, ImageDraw
 from torchvision import transforms
 
-from classes.geometry_features import compute_geometry_features, disc_cup_from_mask_image
-from classes.refuge_classification import _geometry_from_mask
-from classes.unet_segmenter import UNetSegmenter
+from classes.v2.geometry_features import compute_geometry_features, disc_cup_from_mask_image
+from classes.v2.unet_segmenter import UNetSegmenter
+
+
+def _geometry_from_mask(mask: np.ndarray, scale: float) -> Dict:
+    mask = np.asarray(mask) > 0
+    coords = np.argwhere(mask)
+    if coords.size == 0:
+        raise RuntimeError("Empty mask; cannot derive geometry")
+    ys, xs = coords[:, 0], coords[:, 1]
+    centre_x = float(xs.mean())
+    centre_y = float(ys.mean())
+    width = float(xs.max() - xs.min())
+    height = float(ys.max() - ys.min())
+    diameter = max(width, height)
+    radius = diameter / 2.0
+    crop_radius = radius * scale
+    return {
+        "centre_x": centre_x,
+        "centre_y": centre_y,
+        "radius": radius,
+        "crop_radius": crop_radius,
+        "crop_size": crop_radius * 2.0,
+    }
 
 
 class UNetImageCropper:
