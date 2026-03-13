@@ -206,6 +206,7 @@ def make_loader(
     *,
     image_transform,
     image_preprocessor=None,
+    image_cache=None,
     batch_size: int,
     shuffle: bool,
     num_workers: int,
@@ -216,6 +217,7 @@ def make_loader(
         slots,
         image_transform=image_transform,
         image_preprocessor=image_preprocessor,
+        image_cache=image_cache,
     )
     return DataLoader(
         ds,

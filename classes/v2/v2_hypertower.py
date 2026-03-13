@@ -222,7 +222,13 @@ class V2HyperTower:
         ap.add_argument("--augment",      action="store_true")
         ap.add_argument("--balanced-sampling", action="store_true",
                         help="Use WeightedRandomSampler during training to equalise class frequency (default: off).")
-        ap.add_argument("--num-workers",  type=int,   default=0)
+        ap.add_argument("--num-workers",  type=int,   default=4)
+        ap.add_argument("--in-memory-cache", action="store_true", default=True,
+                        help="Cache preprocessed images in RAM (default: on).")
+        ap.add_argument("--no-in-memory-cache", action="store_false", dest="in_memory_cache",
+                        help="Disable in-memory image cache.")
+        ap.add_argument("--cache-workers", type=int, default=4,
+                        help="Threads for prebuilding in-memory image cache (default: 4).")
         ap.add_argument("--device",       choices=["auto", "cpu", "cuda"], default="auto")
         ap.add_argument("--seed",         type=int,   default=1234)
         ap.add_argument("--run-name",     default=None)
@@ -452,6 +458,8 @@ class V2HyperTower:
             n_classes=num_classes,
         )
 
+        image_cache: dict | None = {} if getattr(args, "in_memory_cache", False) else None
+
         for fold in range(n_folds):
             seed_everything(args.seed + fold * 100)
             fold_dir = tm_dir / f"fold{fold}"
@@ -469,6 +477,7 @@ class V2HyperTower:
                 fold_dir=fold_dir,
                 tower_mode=tower_mode,
                 pred_store=pred_store,
+                image_cache=image_cache,
             )
             fold_results.append(result)
             if artifacts.y_true_ensemble is not None:
@@ -632,6 +641,7 @@ class V2HyperTower:
         fold_dir: Path,
         tower_mode: str,
         pred_store: "PredictionStore | None" = None,
+        image_cache: "dict | None" = None,
     ) -> tuple[FoldResult, FoldArtifacts]:
         args = self.args
         device = self.device
@@ -743,7 +753,8 @@ class V2HyperTower:
 
         slots_eye     = profile_eye.slot_descriptors()
         slots_patient = profile_patient.slot_descriptors()
-        loader_kw     = dict(batch_size=args.batch_size, num_workers=args.num_workers)
+        loader_kw     = dict(batch_size=args.batch_size, num_workers=args.num_workers,
+                             image_cache=image_cache)
 
         # ---- loaders ---------------------------------------------------
         use_balanced = bool(getattr(args, "balanced_sampling", False))
@@ -830,6 +841,16 @@ class V2HyperTower:
                 print(f"  [fold {fold+1}] holdout_n={len(holdout_bilat)} (bilateral patients)", flush=True)
                 if pred_store is not None:
                     pred_store.set_split(fold, [str(s["id_1"]) for s in holdout_bilat], "holdout")
+
+        # ---- prebuild in-memory image cache (fold 0 only; shared dict fills for later folds) ----
+        if image_cache is not None:
+            cache_workers = int(getattr(args, "cache_workers", 4))
+            _loaders_to_warm = [
+                train_single_loader, train_bilat_loader, val_loader, holdout_loader,
+            ]
+            for _ldr in _loaders_to_warm:
+                if _ldr is not None:
+                    _ldr.dataset.prebuild_image_cache(cache_workers=cache_workers)
 
         opt_single   = torch.optim.Adam(single.parameters(), lr=args.lr)   if run_single else None
         opt_bilateral = torch.optim.Adam(bilateral.parameters(), lr=args.lr) if run_bilat  else None
@@ -942,6 +963,7 @@ class V2HyperTower:
         # ---- epoch loop ------------------------------------------------
         _prev_phase_single = "inactive"  # used to detect md_warmup → next phase transition
         for epoch in range(total_epochs):
+            _epoch_t0 = time.time()
             if not run_single:
                 phase_single, main_epoch_single, single_active = "inactive", 0, False
             elif epoch < single_warmup_md:
@@ -1329,6 +1351,7 @@ class V2HyperTower:
                 print()  # seal the progress bar line
 
             if args.log_every > 0 and (epoch + 1) % args.log_every == 0:
+                _epoch_secs = time.time() - _epoch_t0
                 hld_auc = target_holdout_single_auc if run_single else bi_auc_h
                 hld_suffix = f"  hld_auc={hld_auc:.4f}" if holdout_loader is not None else ""
 
@@ -1356,7 +1379,7 @@ class V2HyperTower:
                 if run_single:
                     if tower_mode == "single":
                         msg = (
-                            f"    ep {epoch+1:>3}/{total_epochs} "
+                            f"    ep {epoch+1:>3}/{total_epochs} ({_epoch_secs:.1f}s) "
                             f"[single:{phase_single} {single_phase_epoch}/{single_phase_total}] "
                             f"fused(acc={cl_acc:.4f},auc={cl_auc:.4f}) "
                             f"img(acc={cl_acc_img:.4f},auc={cl_auc_img:.4f}) "
@@ -1366,7 +1389,7 @@ class V2HyperTower:
                         )
                     else:
                         msg = (
-                            f"    ep {epoch+1:>3}/{total_epochs} "
+                            f"    ep {epoch+1:>3}/{total_epochs} ({_epoch_secs:.1f}s) "
                             f"[single:{phase_single} {single_phase_epoch}/{single_phase_total}] "
                             f"fused(acc={en_acc:.4f},auc={en_auc:.4f}) "
                             f"img(acc={en_acc_img:.4f},auc={en_auc_img:.4f}) "
@@ -1376,7 +1399,7 @@ class V2HyperTower:
                         )
                 else:
                     msg = (
-                        f"    ep {epoch+1:>3}/{total_epochs} "
+                        f"    ep {epoch+1:>3}/{total_epochs} ({_epoch_secs:.1f}s) "
                         f"[bilat:{phase_bilat} {bilat_phase_epoch}/{bilat_phase_total}] "
                         f"fused(acc={bi_acc:.4f},auc={bi_auc:.4f}) "
                         f"img(acc={bi_acc_img:.4f},auc={bi_auc_img:.4f}) "

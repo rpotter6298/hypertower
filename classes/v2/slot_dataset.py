@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
 from pathlib import Path
@@ -45,12 +46,14 @@ class SlotDataset(Dataset):
         image_transform: Optional[Callable[[Image.Image], torch.Tensor]] = None,
         matrix_transform: Optional[Callable[[Any], torch.Tensor]] = None,
         image_preprocessor: Optional[Callable[..., Image.Image]] = None,
+        image_cache: Optional[dict[str, np.ndarray]] = None,
     ) -> None:
         self.samples = samples
         self.slot_descriptors = slot_descriptors
         self.image_transform = image_transform or transforms.ToTensor()
         self.matrix_transform = matrix_transform or self._default_matrix_transform
         self.image_preprocessor = image_preprocessor
+        self.image_cache = image_cache
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -74,13 +77,71 @@ class SlotDataset(Dataset):
                 raise ValueError("Missing required image slot")
             return None
         path = Path(value)
+        cache_key = str(value)
+
+        if self.image_cache is not None:
+            cached = self.image_cache.get(cache_key)
+            if cached is not None:
+                return self.image_transform(Image.fromarray(cached, mode="RGB"))
+
         img = Image.open(path).convert("RGB")
         if self.image_preprocessor is not None:
             try:
                 img = self.image_preprocessor(img, path)
             except TypeError:
                 img = self.image_preprocessor(img)
+
+        if self.image_cache is not None:
+            self.image_cache[cache_key] = np.asarray(img, dtype=np.uint8)
+
         return self.image_transform(img)
+
+    def prebuild_image_cache(self, cache_workers: int = 0) -> None:
+        """Pre-populate image_cache for all samples in this dataset."""
+        if self.image_cache is None:
+            return
+        paths = list({
+            str(record[key])
+            for record in self.samples
+            for key, desc in self.slot_descriptors.items()
+            if desc.kind == "image" and record.get(key) is not None
+        })
+        to_warm = [p for p in paths if p not in self.image_cache]
+        if not to_warm:
+            return
+        print(
+            f"[image_cache] warming {len(to_warm)} images "
+            f"({len(paths) - len(to_warm)} already cached)",
+            flush=True,
+        )
+
+        def _warm_one(path_str: str) -> None:
+            if path_str in self.image_cache:
+                return
+            p = Path(path_str)
+            img = Image.open(p).convert("RGB")
+            if self.image_preprocessor is not None:
+                try:
+                    img = self.image_preprocessor(img, p)
+                except TypeError:
+                    img = self.image_preprocessor(img)
+            self.image_cache[path_str] = np.asarray(img, dtype=np.uint8)
+
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            tqdm = None
+
+        if cache_workers <= 1:
+            it = tqdm(to_warm, desc="Warm image cache", unit="img") if tqdm else to_warm
+            for path_str in it:
+                _warm_one(path_str)
+        else:
+            with ThreadPoolExecutor(max_workers=cache_workers) as ex:
+                futures = {ex.submit(_warm_one, p): p for p in to_warm}
+                it = tqdm(as_completed(futures), total=len(futures), desc="Warm image cache", unit="img") if tqdm else as_completed(futures)
+                for fut in it:
+                    fut.result()
 
     def _load_matrix(self, value: Any, *, required: bool) -> Optional[torch.Tensor]:
         if value is None:
