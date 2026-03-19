@@ -177,6 +177,8 @@ class V2HyperTower:
         ap.add_argument("--clinical-dir", default="Papila/ClinicalData")
         ap.add_argument("--label-col",    default="Diagnosis")
         ap.add_argument("--cat-cols",     nargs="*", default=["Gender", "Phakic/Pseudophakic"])
+        ap.add_argument("--exclude-cols", nargs="*", default=[],
+                        help="Feature columns to exclude entirely from the clinical feature matrix.")
         ap.add_argument("--eval-mode",    choices=["binary", "multiclass"], default="multiclass")
         ap.add_argument(
             "--tower-mode", choices=["single", "ensemble", "bilateral", "classic"],
@@ -217,6 +219,10 @@ class V2HyperTower:
         ap.add_argument("--lr",           type=float, default=1e-4)
         ap.add_argument("--bcd-prob",     type=float, default=0.5,
                         help="Tower-only step probability during main phase (per model).")
+        ap.add_argument("--tower-loss-mode", choices=["bcd", "all"], default="bcd",
+                        help="Main-phase tower loss strategy: "
+                             "'bcd' (Block Coordinate Descent — randomly train one tower or fused per step) "
+                             "or 'all' (sum all three losses — fused + img + md — every step).")
         ap.add_argument("--backbone",     default="refugelike")
         ap.add_argument("--freeze-ratio", type=float, default=0.0)
         ap.add_argument("--augment",      action="store_true")
@@ -299,6 +305,21 @@ class V2HyperTower:
         ap.add_argument("--log-every",    type=int, default=1)
         ap.add_argument("--save-checkpoints", action=argparse.BooleanOptionalAction, default=True,
                         help="Save best_single.pt / best_holdout_single.pt per fold (use --no-save-checkpoints to disable)")
+        ap.add_argument("--use-last-epoch", action="store_true", default=False,
+                        help="Score using the final epoch's model state rather than the best-AUC checkpoint.")
+        # IOP feature options
+        ap.add_argument(
+            "--iop-corr-method",
+            choices=["ratio", "ols", "lad", "multi"],
+            default="ratio",
+            help="Perkins→Pneumatic conversion method: ratio (default), ols, lad, or multi (+CCT).",
+        )
+        ap.add_argument(
+            "--iop-drop-raw",
+            action="store_true",
+            default=False,
+            help="Exclude IOP_raw from the feature matrix (keep only IOP_corr).",
+        )
         ap.add_argument(
             "--fused-head", action="store_true",
             help="(ensemble mode only) After base SingleEyeHT training, freeze it and train a "
@@ -329,6 +350,9 @@ class V2HyperTower:
             cat_cols=list(args.cat_cols),
             n_splits=args.n_splits,
             random_seed=args.fold_seed,
+            iop_corr_method=getattr(args, "iop_corr_method", "ratio"),
+            iop_drop_raw=getattr(args, "iop_drop_raw", False),
+            exclude_cols=list(getattr(args, "exclude_cols", []) or []),
         )
         print(f"Loaded: {len(self.data.df)} rows  feature_dim={self.data.feature_dim}", flush=True)
         self.image_preprocessor = build_image_preprocessor_from_args(args)
@@ -488,6 +512,8 @@ class V2HyperTower:
                 np.save(fold_dir / "probs_img.npy", artifacts.probs_ensemble_img)
             if artifacts.probs_ensemble_md is not None:
                 np.save(fold_dir / "probs_md.npy", artifacts.probs_ensemble_md)
+            if artifacts.y_true_classic is not None:
+                np.save(fold_dir / "y_true.npy", artifacts.y_true_classic)
             if artifacts.probs_classic is not None:
                 np.save(fold_dir / "probs_classic.npy", artifacts.probs_classic)
             if artifacts.probs_classic_img is not None:
@@ -1001,6 +1027,7 @@ class V2HyperTower:
                 sl_loss, sl_acc = train_single_epoch(
                     single, _active_loader, opt_single, device,
                     phase=phase_single, bcd_prob=float(args.bcd_prob),
+                    tower_loss_mode=args.tower_loss_mode,
                 )
             else:
                 sl_loss, sl_acc = nan, nan
@@ -1009,6 +1036,7 @@ class V2HyperTower:
                 bl_loss, bl_acc = train_bilateral_epoch(
                     bilateral, train_bilat_loader, opt_bilateral, device,
                     phase=phase_bilat, bcd_prob=float(args.bcd_prob),
+                    tower_loss_mode=args.tower_loss_mode,
                 )
             else:
                 bl_loss, bl_acc = nan, nan
@@ -1413,6 +1441,12 @@ class V2HyperTower:
             _prev_phase_single = phase_single
 
         fold_logger.close()
+
+        # Override: use final epoch state instead of best-AUC checkpoint
+        if getattr(args, "use_last_epoch", False):
+            best_single_state = copy.deepcopy(single.state_dict())
+            if run_bilat:
+                best_bilat_state = copy.deepcopy(bilat.state_dict())
 
         if args.save_checkpoints:
             if best_single_state is not None:

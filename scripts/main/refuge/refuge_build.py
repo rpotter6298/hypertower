@@ -6,7 +6,7 @@ Usage examples (after activating .venv_refuge):
   python refuge_build.py --eval --with-ttt
 
 The script expects the REFUGE folder and writes checkpoints under
-models/refuge/segmentation and models/refuge/classifier.
+models/v2/refuge/segmentation and models/v2/refuge/classifier.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ from classes.papila_builders import build_papila_clinical
 
 REFUGE_ROOT = Path("REFUGE")
 SEG_CKPT = Path("models/refuge/segmentation/refuge_segmentation_best.pt")
-CLF_DIR = Path("models/refuge/classifier")
+CLF_DIR = Path("models/v2/refuge/classifier")
 UNET_WEIGHT_CANDIDATES = (
     Path("models/v2/refuge/segmentation/per_image/best.pt"),
     Path("models/v2/refuge/segmentation/best.pt"),
@@ -820,7 +820,7 @@ def parse_args() -> argparse.Namespace:
         "--clf-checkpoint-path",
         type=Path,
         default=None,
-        help="Optional explicit path for the classifier checkpoint (defaults to models/refuge/classifier/<backbone>/refuge_classifier_best.pt)",
+        help="Optional explicit path for the classifier checkpoint (defaults to models/v2/refuge/classifier/<backbone>/refuge_classifier_best.pt)",
     )
     parser.add_argument(
         "--eval-datasets",

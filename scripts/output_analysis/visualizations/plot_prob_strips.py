@@ -80,22 +80,74 @@ def _fold_colours(n_folds: int) -> dict[int, dict[int, tuple]]:
     return out
 
 
-def _load_folds(run_dir: Path, head: str) -> list[pd.DataFrame]:
-    fold_dirs = sorted(
+def _fold_dirs(run_dir: Path) -> list[Path]:
+    return sorted(
         [p for p in run_dir.glob("fold*") if p.is_dir() and re.search(r"\d+", p.name)],
         key=lambda p: int(re.search(r"\d+", p.name).group()),
     )
-    if not fold_dirs:
+
+
+def _detect_heads(run_dir: Path) -> list[str]:
+    """Return all head names available in the first non-empty fold dir."""
+    for fd in _fold_dirs(run_dir):
+        found: list[str] = []
+        # Standard heads come from the predictions CSV — prefer per-eye
+        csv = fd / "predictions_pereye.csv"
+        if not csv.exists():
+            csv = fd / "predictions_classic.csv"
+        if not csv.exists():
+            csv = fd / "predictions.csv"
+        if csv.exists():
+            cols = pd.read_csv(csv, nrows=0).columns.tolist()
+            for h in ["fused", "img", "md"]:
+                if f"prob_{h}_c0" in cols:
+                    found.append(h)
+        # Fusion head lives in a separate npy
+        if (fd / "probs_fused_head.npy").exists():
+            found.append("fused_head")
+        if found:
+            return found
+    return ["fused"]  # safe fallback
+
+
+def _load_folds(run_dir: Path, head: str) -> list[pd.DataFrame]:
+    dirs = _fold_dirs(run_dir)
+    if not dirs:
         raise FileNotFoundError(f"No fold* directories found under {run_dir}")
     frames = []
-    for fd in fold_dirs:
-        csv = fd / "predictions_classic.csv"
+    for fd in dirs:
+        fold_num = int(re.search(r"\d+", fd.name).group())
+        # fused_head is stored as npy, not in the predictions CSV
+        if head == "fused_head":
+            y_path = fd / "y_true.npy"
+            p_path = fd / "probs_fused_head.npy"
+            if not y_path.exists() or not p_path.exists():
+                print(f"  [warn] fused_head npy not found in {fd}, skipping")
+                continue
+            y = np.load(y_path)
+            p = np.load(p_path)
+            df = pd.DataFrame({"y_true": y})
+            for c in range(p.shape[1]):
+                df[f"prob_fused_head_c{c}"] = p[:, c]
+            df["_fold"] = fold_num
+            frames.append(df)
+            continue
+        # Standard heads from predictions CSV — prefer per-eye (2× dots, no OD/OS averaging)
+        csv = fd / "predictions_pereye.csv"
         if not csv.exists():
-            print(f"  [warn] {csv} not found, skipping")
+            csv = fd / "predictions_classic.csv"
+        if not csv.exists():
+            csv = fd / "predictions.csv"
+        if not csv.exists():
+            print(f"  [warn] no predictions CSV found in {fd}, skipping")
             continue
         df = pd.read_csv(csv)
-        df["_fold"] = int(re.search(r"\d+", fd.name).group())
+        df["_fold"] = fold_num
         frames.append(df)
+    if not frames:
+        raise FileNotFoundError(
+            f"No data found for head='{head}' in any fold dir under {run_dir}"
+        )
     return frames
 
 
@@ -627,7 +679,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run-dir", required=True)
-    ap.add_argument("--head", default="fused", choices=["fused", "img", "md"])
+    ap.add_argument("--head", default=None,
+                    choices=["fused", "fused_head", "img", "md"],
+                    help="Head to plot. Omit to auto-detect and plot all available heads.")
     ap.add_argument("--style", default="strips",
                     choices=["strips", "confidence", "triangle", "triangle3d"],
                     help="strips: X=true class, Y=P(Glaucoma).  "
@@ -638,14 +692,22 @@ def main():
 
     rd = Path(args.run_dir)
     od = Path(args.out) if args.out else None
-    if args.style == "confidence":
-        plot_confidence(rd, head=args.head, out_dir=od)
-    elif args.style == "triangle":
-        plot_triangle(rd, head=args.head, out_dir=od)
-    elif args.style == "triangle3d":
-        plot_triangle_3d(rd, head=args.head, out_dir=od)
-    else:
-        plot_strip(rd, head=args.head, out_dir=od)
+
+    heads = [args.head] if args.head else _detect_heads(rd)
+    print(f"Heads to plot: {heads}")
+
+    plot_fn = {
+        "confidence": plot_confidence,
+        "triangle":   plot_triangle,
+        "triangle3d": plot_triangle_3d,
+    }.get(args.style, plot_strip)
+
+    for head in heads:
+        print(f"\n--- {head} ---")
+        try:
+            plot_fn(rd, head=head, out_dir=od)
+        except Exception as exc:
+            print(f"  [skip] {head}: {exc}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ class ClinicalDataset(Dataset):
         image_preprocessor=None,
         geometry_provider=None,
         geometry_dim: int = 0,
+        image_cache: "dict | None" = None,
     ):
         self.clinical = clinical_data
         self.transform_image = img_transform
@@ -23,6 +24,7 @@ class ClinicalDataset(Dataset):
         self.image_preprocessor = image_preprocessor
         self.geometry_provider = geometry_provider
         self.geometry_dim = geometry_dim if geometry_provider is not None else 0
+        self.image_cache = image_cache
 
     def __len__(self):
         return len(self.clinical.df)
@@ -31,7 +33,13 @@ class ClinicalDataset(Dataset):
         row = self.clinical.df.iloc[idx]
         # load & transform image
         img_path = self.clinical.get_image_path(row)
-        orig_img = Image.open(img_path).convert("RGB")
+        cache_key = str(img_path)
+        if self.image_cache is not None and cache_key in self.image_cache:
+            orig_img = Image.fromarray(self.image_cache[cache_key])
+        else:
+            orig_img = Image.open(img_path).convert("RGB")
+            if self.image_cache is not None:
+                self.image_cache[cache_key] = np.asarray(orig_img, dtype=np.uint8)
         img = orig_img
         if self.image_preprocessor is not None:
             img = self.image_preprocessor(img, img_path)

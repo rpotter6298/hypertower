@@ -12,6 +12,7 @@ from sklearn.metrics import (
     matthews_corrcoef,
     recall_score,
     roc_auc_score,
+    roc_curve,
 )
 
 
@@ -142,26 +143,37 @@ def compute_extended_metrics(
 # ---------------------------------------------------------------------------
 
 def tune_binary_threshold(y_true: np.ndarray, p1: np.ndarray) -> float:
-    if y_true.size == 0:
+    """Pick threshold via Youden's J (sensitivity + specificity − 1).
+
+    This is class-distribution independent, unlike maximising raw accuracy,
+    which is biased toward the majority class on imbalanced validation sets.
+    Falls back to 0.5 if both classes are not present.
+    """
+    if y_true.size == 0 or len(np.unique(y_true)) < 2:
         return 0.5
-    grid = np.linspace(0.0, 1.0, 1001)
-    best_t, best_acc = 0.5, -1.0
-    for t in grid:
-        pred = (p1 >= t).astype(int)
-        acc = float((pred == y_true).mean())
-        if acc > best_acc or (acc == best_acc and abs(t - 0.5) < abs(best_t - 0.5)):
-            best_acc, best_t = acc, float(t)
-    return best_t
+    fpr, tpr, thresholds = roc_curve(y_true, p1)
+    j = tpr + (1.0 - fpr) - 1.0
+    return float(thresholds[np.argmax(j)])
 
 
 def multiclass_acc_with_bias(y_true: np.ndarray, probs: np.ndarray, bias: np.ndarray) -> float:
+    """Balanced accuracy (mean per-class recall) after applying log-space bias."""
     if y_true.size == 0:
         return float("nan")
     logits = np.log(np.clip(probs, 1e-8, 1.0)) + bias.reshape(1, -1)
-    return float((np.argmax(logits, axis=1) == y_true).mean())
+    preds = np.argmax(logits, axis=1)
+    classes = np.unique(y_true)
+    per_class = [(preds[y_true == c] == c).mean() for c in classes]
+    return float(np.mean(per_class))
 
 
 def tune_multiclass_bias(y_true: np.ndarray, probs: np.ndarray, *, iters: int = 2) -> np.ndarray:
+    """Grid-search per-class log-space bias to maximise balanced accuracy.
+
+    Balanced accuracy (mean per-class recall) is class-distribution independent,
+    unlike raw accuracy which is biased toward the majority class on imbalanced
+    validation sets.
+    """
     if y_true.size == 0 or probs.size == 0:
         return np.zeros((0,), dtype=float)
     c = probs.shape[1]

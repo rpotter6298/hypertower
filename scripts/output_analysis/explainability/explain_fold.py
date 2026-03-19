@@ -409,6 +409,7 @@ def run_gradcam(
     overlay_grid_items: list[
         tuple[Image.Image | None, Image.Image | None, str, bool]
     ] = []
+    index_rows: list[dict] = []
 
     model.eval()
     for batch in loader:
@@ -492,6 +493,19 @@ def run_gradcam(
             flush=True,
         )
 
+        # Save raw CAM arrays
+        np.save(gradcam_dir / f"patient_{pid}_OD_cam.npy", cam_od)
+        np.save(gradcam_dir / f"patient_{pid}_OS_cam.npy", cam_os)
+        index_rows.append({
+            "patient_id":  pid,
+            "true_label":  label,
+            "true_name":   true_name,
+            "pred_label":  pred,
+            "pred_name":   pred_name,
+            "confidence":  conf,
+            "correct":     correct,
+        })
+
         # Accumulate for summary grid
         od_overlay = overlay_gradcam(orig_od, cam_od, alpha) if orig_od else None
         os_overlay = overlay_gradcam(orig_os, cam_os, alpha) if orig_os else None
@@ -499,6 +513,16 @@ def run_gradcam(
         overlay_grid_items.append((od_overlay, os_overlay, short_lbl, correct))
 
     gcam.remove()
+
+    # ---- save index CSV ----
+    if index_rows:
+        import csv
+        idx_path = gradcam_dir / "gradcam_index.csv"
+        with idx_path.open("w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(index_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(index_rows)
+        print(f"  Index CSV → {idx_path}", flush=True)
 
     # ---- summary grid: N_patients rows × 2 cols (OD overlay | OS overlay) ----
     n = len(overlay_grid_items)

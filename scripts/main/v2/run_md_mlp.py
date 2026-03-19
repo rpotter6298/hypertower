@@ -323,6 +323,7 @@ def main() -> None:
         best_epoch = 0
         best_phase = ""
         best_state = None
+        epoch_log_rows = []
 
         print(
             f"\n[fold {fold_idx+1}/{args.n_splits}] "
@@ -350,12 +351,31 @@ def main() -> None:
                 aggregate_patient=aggregate_patient,
             )
 
+            hld_auc_ep = float("nan")
+            hld_acc_ep = float("nan")
+            if holdout_loader is not None:
+                _, _, hld_auc_ep, hld_acc_ep = _evaluate_single(
+                    model, holdout_loader, device, num_classes,
+                    aggregate_patient=aggregate_patient,
+                )
+
             is_main = phase == "main"
             if is_main and (not np.isnan(val_auc)) and val_auc > best_auc:
                 best_auc = float(val_auc)
                 best_state = copy.deepcopy(model.state_dict())
                 best_epoch = ep + 1
                 best_phase = phase
+
+            epoch_log_rows.append({
+                "epoch": ep + 1,
+                "phase": phase,
+                "train_loss": float(tr_loss),
+                "train_acc": float(tr_acc),
+                "val_auc": float(val_auc),
+                "val_acc": float(val_acc),
+                "hld_auc": float(hld_auc_ep),
+                "hld_acc": float(hld_acc_ep),
+            })
 
             if ep == 0 or (ep + 1) % 10 == 0 or (ep + 1) == total_epochs:
                 print(
@@ -365,6 +385,9 @@ def main() -> None:
                     f"best_auc={best_auc:.4f}",
                     flush=True,
                 )
+
+        import pandas as _pd
+        _pd.DataFrame(epoch_log_rows).to_csv(fold_dir / "epoch_log.csv", index=False)
 
         if best_state is not None:
             model.load_state_dict(best_state)

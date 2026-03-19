@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -33,21 +33,80 @@ def _nearest_pachy_key(x: float) -> int:
     return int(_PACHY_KEYS[idx])
 
 
-# Ratio derived from patients with both Pneumatic and Perkins readings (n=41, OD+OS combined).
-# Pneumatic / Perkins mean ratio = 1.158; applied to Perkins-only rows to put them on the
-# Pneumatic scale before IOP_corr is computed.
-_PERKINS_TO_PNEUMATIC_RATIO: float = 1.158
+def _fit_perkins_converter(
+    frames: List[pd.DataFrame], method: str
+) -> Callable[[float, Optional[float]], float]:
+    """
+    Fit a Perkins→Pneumatic converter from pooled paired observations across all frames.
+    Returns a callable: converter(perkins_value, pachymetry_value) -> float.
+    Supported methods: "ratio", "ols", "lad", "multi".
+    """
+    combined = pd.concat(frames, ignore_index=True)
+    paired = combined.dropna(subset=["Pneumatic", "Perkins"])
+    pneumatic = paired["Pneumatic"].values.astype(float)
+    perkins   = paired["Perkins"].values.astype(float)
+
+    if len(paired) == 0:
+        raise ValueError("No paired Pneumatic+Perkins observations found; cannot fit converter.")
+
+    if method == "ratio":
+        ratio = float((pneumatic / perkins).mean())
+        def converter_ratio(p: float, pachy: Optional[float] = None) -> float:
+            return p * ratio
+        return converter_ratio
+
+    elif method == "ols":
+        from scipy import stats as _stats
+        slope, intercept, *_ = _stats.linregress(perkins, pneumatic)
+        slope, intercept = float(slope), float(intercept)
+        def converter_ols(p: float, pachy: Optional[float] = None) -> float:
+            return p * slope + intercept
+        return converter_ols
+
+    elif method == "lad":
+        from scipy import stats as _stats
+        from scipy.optimize import minimize as _minimize
+        slope0, intercept0, *_ = _stats.linregress(perkins, pneumatic)
+        def _lad_loss(params):
+            a, b = params
+            return np.abs(pneumatic - (a * perkins + b)).mean()
+        res = _minimize(_lad_loss, x0=[slope0, intercept0], method="Nelder-Mead")
+        slope, intercept = float(res.x[0]), float(res.x[1])
+        def converter_lad(p: float, pachy: Optional[float] = None) -> float:
+            return p * slope + intercept
+        return converter_lad
+
+    elif method == "multi":
+        from numpy.linalg import lstsq as _lstsq
+        paired_multi = combined.dropna(subset=["Pneumatic", "Perkins", "Pachymetry"])
+        if len(paired_multi) == 0:
+            raise ValueError("No paired Pneumatic+Perkins+Pachymetry rows; cannot fit multi method.")
+        pneu  = paired_multi["Pneumatic"].values.astype(float)
+        perk  = paired_multi["Perkins"].values.astype(float)
+        pachy_vals = paired_multi["Pachymetry"].values.astype(float)
+        X = np.column_stack([perk, pachy_vals, np.ones(len(perk))])
+        coeffs, *_ = _lstsq(X, pneu, rcond=None)
+        slope, pachy_coef, intercept = float(coeffs[0]), float(coeffs[1]), float(coeffs[2])
+        pachy_fallback = float(pachy_vals.mean())
+        def converter_multi(p: float, pachy: Optional[float] = None) -> float:
+            pv = pachy if (pachy is not None and not np.isnan(pachy)) else pachy_fallback
+            return p * slope + pachy_coef * pv + intercept
+        return converter_multi
+
+    else:
+        raise ValueError(f"Unknown iop_corr_method: {method!r}. Choose ratio/ols/lad/multi.")
 
 
-def _pick_iop(row: pd.Series) -> float:
-    """Prefer Pneumatic; scale Perkins to Pneumatic scale if Pneumatic is absent."""
+def _pick_iop(row: pd.Series, converter: Callable) -> float:
+    """Prefer Pneumatic; convert Perkins to Pneumatic scale if Pneumatic is absent."""
     pneumatic = row.get("Pneumatic", np.nan)
     if not pd.isna(pneumatic):
         return float(pneumatic)
     perkins = row.get("Perkins", np.nan)
-    if not pd.isna(perkins):
-        return float(perkins) * _PERKINS_TO_PNEUMATIC_RATIO
-    return np.nan
+    if pd.isna(perkins):
+        return np.nan
+    pachy = row.get("Pachymetry", np.nan)
+    return converter(float(perkins), None if pd.isna(pachy) else float(pachy))
 
 
 def _correct_iop(raw_iop: float, pachy: float) -> float:
@@ -60,14 +119,20 @@ def _correct_iop(raw_iop: float, pachy: float) -> float:
     return float(raw_iop) + float(_PACHY_TABLE[key])
 
 
-def _apply_iop_and_drop_md(df: pd.DataFrame) -> pd.DataFrame:
+def _apply_iop_and_drop_md(
+    df: pd.DataFrame,
+    converter: Callable,
+    drop_raw: bool = False,
+) -> pd.DataFrame:
     """Add IOP_raw/IOP_corr and drop source IOP columns + VF_MD if present (in-place safe)."""
-    df["IOP_raw"] = df.apply(_pick_iop, axis=1)
+    df["IOP_raw"] = df.apply(lambda row: _pick_iop(row, converter), axis=1)
     pachy = df.get("Pachymetry", pd.Series(np.nan, index=df.index))
     df["IOP_corr"] = [
         _correct_iop(r, p) for r, p in zip(df["IOP_raw"].values, pachy.values)
     ]
     drop_cols = [c for c in ("Pneumatic", "Perkins", "VF_MD") if c in df.columns]
+    if drop_raw:
+        drop_cols.append("IOP_raw")
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True)
     return df
@@ -117,6 +182,9 @@ def build_papila_data(
     cat_cols: List[str],
     n_splits: int = 5,
     random_seed: int = 42,
+    iop_corr_method: str = "ratio",
+    iop_drop_raw: bool = False,
+    exclude_cols: Optional[List[str]] = None,
 ) -> DataBundle:
     """
     Build a DataBundle for PAPILA with dataset-specific preprocessing:
@@ -126,12 +194,17 @@ def build_papila_data(
       - compute IOP_raw / IOP_corr, drop VF_MD
       - build feature typing & folds
     """
+    _exclude = list(exclude_cols) if exclude_cols else []
+
+    # Remove excluded cols from cat_cols too so the bundle doesn't try to encode them
+    effective_cat_cols = [c for c in cat_cols if c not in _exclude]
+
     bundle = DataBundle(
         image_dir=image_dir,
         clinical_dir=clinical_dir,
         label_col=label_col,
         patient_col="Patient ID",
-        cat_cols=cat_cols,
+        cat_cols=effective_cat_cols,
         n_splits=n_splits,
         random_seed=random_seed,
         filename_template="RET{pid:03d}{eye}.jpg",
@@ -148,14 +221,17 @@ def build_papila_data(
         frame["Patient ID"] = frame["Patient ID"].astype(str).str.extract(r"(\d+)")[0].astype(int)
         _canonicalize_eye_column(frame)
 
-    bundle.add_df(od, id_column="ID")
-    bundle.add_df(os, id_column="ID")
+    bundle.add_df(od, id_column="ID", exclude_cols=_exclude or None)
+    bundle.add_df(os, id_column="ID", exclude_cols=_exclude or None)
 
+    converter = _fit_perkins_converter(bundle.frames, method=iop_corr_method)
     for i in range(len(bundle.frames)):
-        bundle.frames[i] = _apply_iop_and_drop_md(bundle.frames[i])
+        bundle.frames[i] = _apply_iop_and_drop_md(
+            bundle.frames[i], converter=converter, drop_raw=iop_drop_raw
+        )
 
-    bundle._refresh_master_df()
-    bundle._infer_or_validate_feature_types()
+    bundle._refresh_master_df(exclude_cols=_exclude or None)
+    bundle._infer_or_validate_feature_types(exclude_cols=_exclude or None)
     bundle._compute_numeric_stats()
     bundle._build_cat_maps()
     bundle._compute_feature_dim()

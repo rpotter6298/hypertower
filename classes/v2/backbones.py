@@ -15,7 +15,7 @@ class BackboneSpec:
     strip: Callable[[nn.Module], tuple]   # fn(model)->(out_dim, model_no_head)
     blocks: Callable[[nn.Module], List[nn.Module]]  # fn(model)->ordered blocks for freezing
 
-REFUGELIKE_BACKBONE_PATH = Path("models/refuge/classifier/refugelike_backbone.pt")
+REFUGELIKE_BACKBONE_PATH = Path("models/v2/refuge/refugelike_backbone.pt")
 REFUGE_DENSENET_PATH = Path("models/refuge/classifier/refuge_densenet_backbone.pt")
 REFUGE_EFFICIENT_B0_PATH = Path("models/refuge/classifier/refuge_efficient_b0_backbone.pt")
 REFUGE_EFFICIENT_B7_PATH = Path("models/refuge/classifier/refuge_efficient_b7_backbone.pt")

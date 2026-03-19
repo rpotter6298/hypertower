@@ -57,12 +57,10 @@ _PROBS_PRIORITY: dict[str, list[str]] = {
 _ALL_PROBS = ["probs_fused_head", "probs_fused", "probs_bilat", "probs_classic"]
 
 
-def detect_probs_stem(fold_dir: Path, tower_mode: str | None) -> str | None:
+def detect_probs_stems(fold_dir: Path, tower_mode: str | None) -> list[str]:
+    """Return all present probs stems (in priority order) for this fold dir."""
     priority = _PROBS_PRIORITY.get(tower_mode, _ALL_PROBS) if tower_mode else _ALL_PROBS
-    for stem in priority:
-        if (fold_dir / f"{stem}.npy").exists():
-            return stem
-    return None
+    return [stem for stem in priority if (fold_dir / f"{stem}.npy").exists()]
 
 
 # ---------------------------------------------------------------------------
@@ -246,39 +244,44 @@ def main() -> None:
     if not fold_dirs:
         raise SystemExit(f"No fold subdirectories found in {mode_dir}")
 
-    # Determine probs stem
-    probs_stem = args.probs
-    if probs_stem is None:
+    # Determine probs stems to plot
+    if args.probs is not None:
+        stems_to_plot = [args.probs]
+    else:
+        # Collect all stems present across any fold dir
+        seen: list[str] = []
         for fd in fold_dirs:
-            probs_stem = detect_probs_stem(fd, args.tower_mode)
-            if probs_stem:
-                break
-    if probs_stem is None:
-        raise SystemExit(f"Could not detect a probs file in {mode_dir}/fold*/")
-    print(f"Using probs: {probs_stem}.npy")
-
-    # Load all folds
-    per_fold: list[tuple[int, dict]] = []
-    for fd in fold_dirs:
-        fold_idx = int(fd.name.replace("fold", ""))
-        result = load_fold(fd, probs_stem, args.eval_mode)
-        if result is None:
-            print(f"  [skip] fold {fold_idx}: missing y_true or {probs_stem}.npy")
-            continue
-        y, p = result
-        curves = per_class_roc(y, p)
-        per_fold.append((fold_idx, curves))
-        auc_str = "  ".join(
-            f"class{k}={v['auc']:.3f}" for k, v in curves.items()
-        )
-        print(f"  fold {fold_idx}: {auc_str}")
-
-    if not per_fold:
-        raise SystemExit("No usable folds — nothing to plot.")
+            for s in detect_probs_stems(fd, args.tower_mode):
+                if s not in seen:
+                    seen.append(s)
+        stems_to_plot = seen
+    if not stems_to_plot:
+        raise SystemExit(f"Could not detect any probs file in {mode_dir}/fold*/")
+    print(f"Probs stems to plot: {stems_to_plot}")
 
     out_dir = mode_dir / "plots"
-    plot_perfold(per_fold, out_dir, args.class_names, probs_stem, args.eval_mode)
-    plot_mean_ovr(per_fold, out_dir, args.class_names, probs_stem, args.eval_mode)
+    for probs_stem in stems_to_plot:
+        print(f"\n--- {probs_stem} ---")
+        per_fold: list[tuple[int, dict]] = []
+        for fd in fold_dirs:
+            fold_idx = int(fd.name.replace("fold", ""))
+            result = load_fold(fd, probs_stem, args.eval_mode)
+            if result is None:
+                print(f"  [skip] fold {fold_idx}: missing y_true or {probs_stem}.npy")
+                continue
+            y, p = result
+            curves = per_class_roc(y, p)
+            per_fold.append((fold_idx, curves))
+            auc_str = "  ".join(f"class{k}={v['auc']:.3f}" for k, v in curves.items())
+            print(f"  fold {fold_idx}: {auc_str}")
+
+        if not per_fold:
+            print(f"  No usable folds for {probs_stem}, skipping.")
+            continue
+
+        plot_perfold(per_fold, out_dir, args.class_names, probs_stem, args.eval_mode)
+        plot_mean_ovr(per_fold, out_dir, args.class_names, probs_stem, args.eval_mode)
+
     print(f"\nPlots written to {out_dir}")
 
 

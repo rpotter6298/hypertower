@@ -362,94 +362,114 @@ def run_gradcam(
     gradcam_dir = out_dir / "gradcam"
     gradcam_dir.mkdir(exist_ok=True)
 
-    target_layer = get_gradcam_layer(model, backbone)
-    gcam = GradCAM(target_layer)
-
-    num_classes = model.bridge.classifier_fused[-1].out_features
+    manifest_path = gradcam_dir / "gradcam_manifest.csv"
+    skip_overlays = manifest_path.exists()
     overlay_grid_items = []
 
-    model.eval()
-    for batch in loader:
-        img_od = batch["image_1"].to(device)
-        img_os = batch["image_2"].to(device)
-        meta_od = batch["matrix_1"].to(device)
-        meta_os = batch["matrix_2"].to(device)
-        lbl_raw = batch["label_1"][0]
-        label = int(lbl_raw.item() if isinstance(lbl_raw, torch.Tensor) else lbl_raw)
-        pid = batch["id_1"][0]
+    if skip_overlays:
+        print("  Overlays already exist — skipping computation, loading from disk.", flush=True)
+        manifest_df = pd.read_csv(manifest_path)
+        for _, row in manifest_df.iterrows():
+            pid = str(row["pid"])
+            od_path = gradcam_dir / f"gradcam_od_{pid}.png"
+            os_path = gradcam_dir / f"gradcam_os_{pid}.png"
+            od_ov = Image.open(od_path).convert("RGB") if od_path.exists() else None
+            os_ov = Image.open(os_path).convert("RGB") if os_path.exists() else None
+            overlay_grid_items.append((od_ov, os_ov, str(row["short_lbl"]), bool(row["correct"])))
+    else:
+        target_layer = get_gradcam_layer(model, backbone)
+        gcam = GradCAM(target_layer)
+        manifest_rows = []
 
-        cam_od, pred = gcam.compute(img_od, meta_od, model)
-        cam_os, _ = gcam.compute(img_os, meta_os, model)
+        model.eval()
+        for batch in loader:
+            img_od = batch["image_1"].to(device)
+            img_os = batch["image_2"].to(device)
+            meta_od = batch["matrix_1"].to(device)
+            meta_os = batch["matrix_2"].to(device)
+            lbl_raw = batch["label_1"][0]
+            label = int(lbl_raw.item() if isinstance(lbl_raw, torch.Tensor) else lbl_raw)
+            pid = batch["id_1"][0]
 
-        with torch.no_grad():
-            out_od = model(img_od, meta_od)
-            conf = float(torch.softmax(out_od, dim=1)[0, pred].item())
+            cam_od, pred = gcam.compute(img_od, meta_od, model)
+            cam_os, _ = gcam.compute(img_os, meta_os, model)
 
-        row_od = eval_df[
-            (eval_df["Patient ID"] == int(pid)) & (eval_df["eyeID"] == "OD")
-        ]
-        row_os = eval_df[
-            (eval_df["Patient ID"] == int(pid)) & (eval_df["eyeID"] == "OS")
-        ]
-        orig_od = (
-            Image.open(data.get_image_path(row_od.iloc[0])).convert("RGB")
-            if len(row_od) else None
-        )
-        orig_os = (
-            Image.open(data.get_image_path(row_os.iloc[0])).convert("RGB")
-            if len(row_os) else None
-        )
+            with torch.no_grad():
+                out_od = model(img_od, meta_od)
+                conf = float(torch.softmax(out_od, dim=1)[0, pred].item())
 
-        true_name = label_name(label, eval_mode)
-        pred_name = label_name(pred, eval_mode)
-        correct = label == pred
-        title = (
-            f"Patient {pid}  |  True: {true_name}  |  Pred: {pred_name}  "
-            f"|  conf={conf:.2f}  {'✓' if correct else '✗'}"
-        )
+            row_od = eval_df[
+                (eval_df["Patient ID"] == int(pid)) & (eval_df["eyeID"] == "OD")
+            ]
+            row_os = eval_df[
+                (eval_df["Patient ID"] == int(pid)) & (eval_df["eyeID"] == "OS")
+            ]
+            orig_od = (
+                Image.open(data.get_image_path(row_od.iloc[0])).convert("RGB")
+                if len(row_od) else None
+            )
+            orig_os = (
+                Image.open(data.get_image_path(row_os.iloc[0])).convert("RGB")
+                if len(row_os) else None
+            )
 
-        fig, axes = plt.subplots(2, 2, figsize=(10, 9))
-        fig.suptitle(title, fontsize=11, fontweight="bold", color="green" if correct else "red")
+            true_name = label_name(label, eval_mode)
+            pred_name = label_name(pred, eval_mode)
+            correct = label == pred
+            title = (
+                f"Patient {pid}  |  True: {true_name}  |  Pred: {pred_name}  "
+                f"|  conf={conf:.2f}  {'✓' if correct else '✗'}"
+            )
 
-        if orig_od is not None:
-            axes[0, 0].imshow(orig_od)
-            axes[0, 0].set_title("OD — original", fontsize=9)
-            axes[0, 1].imshow(overlay_gradcam(orig_od, cam_od, alpha))
-            axes[0, 1].set_title("OD — GradCAM", fontsize=9)
-        else:
-            axes[0, 0].set_title("OD — (missing)", fontsize=9)
-        axes[0, 0].axis("off")
-        axes[0, 1].axis("off")
+            fig, axes = plt.subplots(2, 2, figsize=(10, 9))
+            fig.suptitle(title, fontsize=11, fontweight="bold", color="green" if correct else "red")
 
-        if orig_os is not None:
-            axes[1, 0].imshow(orig_os)
-            axes[1, 0].set_title("OS — original", fontsize=9)
-            axes[1, 1].imshow(overlay_gradcam(orig_os, cam_os, alpha))
-            axes[1, 1].set_title("OS — GradCAM", fontsize=9)
-        else:
-            axes[1, 0].set_title("OS — (missing)", fontsize=9)
-        axes[1, 0].axis("off")
-        axes[1, 1].axis("off")
+            if orig_od is not None:
+                axes[0, 0].imshow(orig_od)
+                axes[0, 0].set_title("OD — original", fontsize=9)
+                axes[0, 1].imshow(overlay_gradcam(orig_od, cam_od, alpha))
+                axes[0, 1].set_title("OD — GradCAM", fontsize=9)
+            else:
+                axes[0, 0].set_title("OD — (missing)", fontsize=9)
+            axes[0, 0].axis("off")
+            axes[0, 1].axis("off")
 
-        fig.tight_layout()
-        out_path = gradcam_dir / f"patient_{pid}_OD_OS.png"
-        fig.savefig(out_path, dpi=120)
-        plt.close(fig)
-        print(f"  Patient {pid}: {true_name} → {pred_name} ({conf:.2f})  → {out_path.name}", flush=True)
+            if orig_os is not None:
+                axes[1, 0].imshow(orig_os)
+                axes[1, 0].set_title("OS — original", fontsize=9)
+                axes[1, 1].imshow(overlay_gradcam(orig_os, cam_os, alpha))
+                axes[1, 1].set_title("OS — GradCAM", fontsize=9)
+            else:
+                axes[1, 0].set_title("OS — (missing)", fontsize=9)
+            axes[1, 0].axis("off")
+            axes[1, 1].axis("off")
 
-        od_overlay = overlay_gradcam(orig_od, cam_od, alpha) if orig_od else None
-        os_overlay = overlay_gradcam(orig_os, cam_os, alpha) if orig_os else None
-        short_lbl = f"P{pid}  {true_name[:3]}→{pred_name[:3]} {'✓' if correct else '✗'}"
-        overlay_grid_items.append((od_overlay, os_overlay, short_lbl, correct))
+            fig.tight_layout()
+            out_path = gradcam_dir / f"patient_{pid}_OD_OS.png"
+            fig.savefig(out_path, dpi=120)
+            plt.close(fig)
+            print(f"  Patient {pid}: {true_name} → {pred_name} ({conf:.2f})  → {out_path.name}", flush=True)
 
-    gcam.remove()
+            od_overlay = overlay_gradcam(orig_od, cam_od, alpha) if orig_od else None
+            os_overlay = overlay_gradcam(orig_os, cam_os, alpha) if orig_os else None
+            if od_overlay is not None:
+                od_overlay.save(gradcam_dir / f"gradcam_od_{pid}.png")
+            if os_overlay is not None:
+                os_overlay.save(gradcam_dir / f"gradcam_os_{pid}.png")
+            short_lbl = f"P{pid}  {true_name[:3]}→{pred_name[:3]} {'✓' if correct else '✗'}"
+            overlay_grid_items.append((od_overlay, os_overlay, short_lbl, correct))
+            manifest_rows.append({"pid": pid, "short_lbl": short_lbl, "correct": correct})
 
+        gcam.remove()
+        pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+
+    # Always regenerate the summary grid
     n = len(overlay_grid_items)
     if n == 0:
         print("  [Phase 2] No patients to visualise.", flush=True)
         return
 
-    fig, axes = plt.subplots(n, 2, figsize=(8, n * 3.2 + 0.8))
+    fig, axes = plt.subplots(n, 2, figsize=(8, n * 3.2 + 1.5))
     if n == 1:
         axes = axes[np.newaxis, :]
     fig.suptitle("GradCAM Summary Grid — all holdout patients", fontsize=12)
@@ -465,7 +485,7 @@ def run_gradcam(
             axes[i, 1].imshow(os_ov)
         axes[i, 1].set_title(f"{lbl}\nOS", fontsize=7, color=color)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     grid_path = out_dir / "gradcam_summary_grid.png"
     fig.savefig(grid_path, dpi=120)
     plt.close(fig)
@@ -496,12 +516,23 @@ def _fusion_event_stats(
     pm: np.ndarray,
     split_name: str,
     out_dir: Path,
+    component_labels: tuple[str, str] = ("img", "md"),
 ) -> dict:
     """Compute, save, and plot fusion events for one split. Returns summary dict."""
     N = len(y_true)
     if N == 0:
         print(f"  [{split_name}] No samples — skipping.", flush=True)
         return {}
+
+    a, b = component_labels
+    event_labels = [
+        "full correction\n(both wrong→fused right)",
+        f"{a} assist\n({a} wrong, {b} right→right)",
+        f"{b} assist\n({b} wrong, {a} right→right)",
+        "full error\n(both right→fused wrong)",
+        f"{a} drag\n({a} wrong, {b} right→wrong)",
+        f"{b} drag\n({b} wrong, {a} right→wrong)",
+    ]
 
     pred_f = pf.argmax(axis=1)
     pred_i = pi.argmax(axis=1)
@@ -529,7 +560,7 @@ def _fusion_event_stats(
     counts = [int(m.sum()) for m in event_masks]
 
     print(f"\n  [{split_name}] N={N}", flush=True)
-    for label, count in zip(_EVENT_LABELS, counts):
+    for label, count in zip(event_labels, counts):
         print(f"    {label.replace(chr(10), ' '):55s}: {count}", flush=True)
     n_corr, n_err = counts[0], counts[3]
     print(f"    full correction/error ratio: {n_corr}/{n_err}", flush=True)
@@ -582,11 +613,11 @@ def _fusion_event_stats(
     axes[0].set_xticklabels(["Positive\nevents", "Negative\nevents"])
     axes[0].set_ylabel("Count")
     patches = [mpatches.Patch(color=c, label=l.replace("\n", " "))
-               for c, l in zip(_EVENT_COLORS, _EVENT_LABELS)]
+               for c, l in zip(_EVENT_COLORS, event_labels)]
     axes[0].legend(handles=patches, fontsize=6, loc="upper right")
 
     box_data   = [conf_delta[m] for m in event_masks if m.sum() > 0]
-    box_labels = [l.split("\n")[0] for m, l in zip(event_masks, _EVENT_LABELS) if m.sum() > 0]
+    box_labels = [l.split("\n")[0] for m, l in zip(event_masks, event_labels) if m.sum() > 0]
     box_cols   = [c for m, c in zip(event_masks, _EVENT_COLORS) if m.sum() > 0]
     if box_data:
         bp = axes[1].boxplot(box_data, patch_artist=True, widths=0.5)
@@ -595,10 +626,10 @@ def _fusion_event_stats(
         axes[1].set_xticks(range(1, len(box_labels) + 1))
         axes[1].set_xticklabels(box_labels, rotation=35, ha="right", fontsize=7)
     axes[1].axhline(0, color="black", linewidth=0.8, linestyle="--")
-    axes[1].set_ylabel("conf_delta\n(fused − avg(img, md))")
+    axes[1].set_ylabel(f"conf_delta\n(fused − avg({a}, {b}))")
     axes[1].set_title("Confidence delta by event type")
 
-    for mask, color, label in zip(event_masks, _EVENT_COLORS, _EVENT_LABELS):
+    for mask, color, label in zip(event_masks, _EVENT_COLORS, event_labels):
         if mask.sum() > 0:
             axes[2].scatter(conf_i[mask], conf_m[mask], c=color,
                             label=label.split("\n")[0], alpha=0.85, s=45, edgecolors="none")
@@ -609,8 +640,8 @@ def _fusion_event_stats(
         axes[2].scatter(conf_i[concordant_bad], conf_m[concordant_bad],
                         c="darkgrey", alpha=0.4, s=20, edgecolors="none", label="concordant wrong")
     axes[2].plot([0, 1], [0, 1], "k--", linewidth=0.5, alpha=0.4)
-    axes[2].set_xlabel("conf_img")
-    axes[2].set_ylabel("conf_md")
+    axes[2].set_xlabel(f"conf_{a}")
+    axes[2].set_ylabel(f"conf_{b}")
     axes[2].set_title("Tower confidence space\ncoloured by fusion event")
     axes[2].legend(fontsize=6, loc="lower right")
 
@@ -711,12 +742,13 @@ def run_fusion_event_analysis(fold_dir: Path, out_dir: Path) -> list[dict]:
         pm_ens = 0.5 * (pm_od + pm_os)
         summaries.append(_fusion_event_stats(y_val, pf_ens, pi_ens, pm_ens, "val", out_dir))
 
-        # Fused head (if available): learned bilateral combination vs averaged towers
+        # Fused head (if available): learned bilateral combination vs per-eye bridge outputs
         fused_head_f = fold_dir / "probs_fused_head.npy"
         if fused_head_f.exists():
             pf_head = np.load(fused_head_f)
             summaries.append(_fusion_event_stats(
-                y_val, pf_head, pi_ens, pm_ens, "val_fused_head", out_dir))
+                y_val, pf_head, pf_od, pf_os, "val_fused_head", out_dir,
+                component_labels=("OD", "OS")))
     else:
         print("  Val epoch files not found — skipping val.", flush=True)
 
@@ -746,6 +778,95 @@ def run_fusion_event_analysis(fold_dir: Path, out_dir: Path) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Cross-fold MD importance summary plot
+# ---------------------------------------------------------------------------
+
+
+def _plot_run_md_importance_summary(run_dir: Path, folds: list) -> None:
+    """Aggregate per-fold MD permutation importance CSVs into a run-level summary plot."""
+    all_dfs = []
+    for fold_idx, fold_dir, _ in folds:
+        csv_path = fold_dir / "explainability" / "md_permutation_importance.csv"
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            df["fold"] = fold_idx
+            all_dfs.append(df)
+
+    if not all_dfs:
+        print("  [MD summary] No per-fold importance CSVs found — skipping.", flush=True)
+        return
+
+    combined = pd.concat(all_dfs, ignore_index=True)
+    _SPECIAL = {"TOTAL_MD_ABLATION", "GAUSSIAN_NOISE_ABLATION"}
+    feature_rows = combined[~combined["feature"].isin(_SPECIAL)]
+    special_rows = combined[combined["feature"].isin(_SPECIAL)]
+
+    agg = (
+        feature_rows.groupby("feature")["importance"]
+        .agg(["mean", "std"])
+        .reset_index()
+        .rename(columns={"mean": "mean_importance", "std": "std_importance"})
+        .sort_values("mean_importance", ascending=False)
+        .reset_index(drop=True)
+    )
+    special_agg = (
+        special_rows.groupby("feature")["importance"]
+        .agg(["mean", "std"])
+        .reset_index()
+    )
+
+    names = agg["feature"].tolist()
+    imps  = agg["mean_importance"].tolist()
+    stds  = agg["std_importance"].fillna(0).tolist()
+    colors = ["#e05c5c" if v >= 0 else "#5c9ee0" for v in imps]
+
+    fig, ax = plt.subplots(figsize=(9, max(4, (len(names) + 3) * 0.45)))
+    y_pos = np.arange(len(names))
+    ax.barh(y_pos, imps, xerr=stds, color=colors, ecolor="grey", capsize=3, height=0.6)
+    ax.axhline(len(names) - 0.25, color="grey", linewidth=0.6, linestyle="--")
+
+    special_label_map = {
+        "TOTAL_MD_ABLATION":    "ALL MD (permute)",
+        "GAUSSIAN_NOISE_ABLATION": "ALL MD (noise)",
+    }
+    special_colors = {
+        "TOTAL_MD_ABLATION":    "#c45ce0",
+        "GAUSSIAN_NOISE_ABLATION": "#e08c2a",
+    }
+    extra_ytick_pos = []
+    extra_ytick_labels = []
+    for i, feat in enumerate(["TOTAL_MD_ABLATION", "GAUSSIAN_NOISE_ABLATION"]):
+        row = special_agg[special_agg["feature"] == feat]
+        if row.empty:
+            continue
+        offset = len(names) + 0.5 + i
+        val, err = float(row["mean"].iloc[0]), float(row["std"].iloc[0])
+        ax.barh(offset, val, xerr=err,
+                color=special_colors[feat] if val >= 0 else "#5c9ee0",
+                ecolor="grey", capsize=3, height=0.6)
+        extra_ytick_pos.append(offset)
+        extra_ytick_labels.append(special_label_map[feat])
+
+    ax.set_yticks(list(y_pos) + extra_ytick_pos)
+    ax.set_yticklabels(names + extra_ytick_labels, fontsize=9)
+    ax.invert_yaxis()
+    ax.axvline(0, color="black", linewidth=0.8)
+    ax.set_xlabel("Mean AUC drop (baseline − permuted)", fontsize=10)
+    ax.set_title(
+        f"MD Tower — Permutation Feature Importance ({len(all_dfs)}-fold summary)\n"
+        f"error bars = std across folds",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    out_path = run_dir / "explainability_md_importance_summary.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"  MD importance summary → {out_path}", flush=True)
+
+    agg.to_csv(run_dir / "explainability_md_importance_summary.csv", index=False)
+
+
+# ---------------------------------------------------------------------------
 # Cross-fold fusion summary plot
 # ---------------------------------------------------------------------------
 
@@ -760,6 +881,17 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
         grp = grp.sort_values("fold").reset_index(drop=True)
         n_folds = len(grp)
         fold_ids = grp["fold"].values
+
+        # For the fused_head split the two comparators are OD/OS bridges, not img/md towers
+        comp_a, comp_b = ("OD", "OS") if "fused_head" in split_name else ("img", "md")
+        summary_event_labels = [
+            "full correction\n(both wrong→fused right)",
+            f"{comp_a} assist\n({comp_a} wrong, {comp_b} right→right)",
+            f"{comp_b} assist\n({comp_b} wrong, {comp_a} right→right)",
+            "full error\n(both right→fused wrong)",
+            f"{comp_a} drag\n({comp_a} wrong, {comp_b} right→wrong)",
+            f"{comp_b} drag\n({comp_b} wrong, {comp_a} right→wrong)",
+        ]
 
         # Load all per-fold CSVs for this split to get sample-level data
         sample_dfs = []
@@ -790,7 +922,7 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
         axes[0].set_xticklabels(["Positive\nevents", "Negative\nevents"])
         axes[0].set_ylabel("Count (all folds)")
         patches = [mpatches.Patch(color=c, label=l.replace("\n", " "))
-                   for c, l in zip(_EVENT_COLORS, _EVENT_LABELS)]
+                   for c, l in zip(_EVENT_COLORS, summary_event_labels)]
         axes[0].legend(handles=patches, fontsize=6, loc="upper right")
 
         # Panel 2: per-fold stacked bar (fold variance)
@@ -819,7 +951,7 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
         axes[2].axhline(0, color="grey", linewidth=0.7)
         axes[2].set_xticks(x)
         axes[2].set_xticklabels([f"fold {f}" for f in fold_ids], fontsize=8)
-        axes[2].set_ylabel("conf_delta mean\n(fused − avg(img, md))")
+        axes[2].set_ylabel(f"conf_delta mean\n(fused − avg({comp_a}, {comp_b}))")
         axes[2].set_title("Confidence delta per fold")
         axes[2].legend(fontsize=8)
 
@@ -829,7 +961,7 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
             box_data   = [sample_df.loc[sample_df["event_type"] == k, "conf_delta"].values
                           for k in key_order]
             box_labels = [l.split("\n")[0]
-                          for k, l in zip(_EVENT_KEYS, _EVENT_LABELS) if k in key_order]
+                          for k, l in zip(_EVENT_KEYS, summary_event_labels) if k in key_order]
             box_cols   = [c for k, c in zip(_EVENT_KEYS, _EVENT_COLORS) if k in key_order]
             if box_data:
                 bp = axes[3].boxplot(box_data, patch_artist=True, widths=0.5)
@@ -838,7 +970,7 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
                 axes[3].set_xticks(range(1, len(box_labels) + 1))
                 axes[3].set_xticklabels(box_labels, rotation=35, ha="right", fontsize=7)
         axes[3].axhline(0, color="black", linewidth=0.8, linestyle="--")
-        axes[3].set_ylabel("conf_delta\n(fused − avg(img, md))")
+        axes[3].set_ylabel(f"conf_delta\n(fused − avg({comp_a}, {comp_b}))")
         axes[3].set_title("Confidence delta by event type\n(all folds)")
 
         # Panel 5: tower confidence space scatter (all folds combined)
@@ -847,7 +979,7 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
             for key, color in zip(_EVENT_KEYS, _EVENT_COLORS):
                 sub = sample_df[sample_df["event_type"] == key]
                 if len(sub):
-                    label = next(l.split("\n")[0] for k, l in zip(_EVENT_KEYS, _EVENT_LABELS)
+                    label = next(l.split("\n")[0] for k, l in zip(_EVENT_KEYS, summary_event_labels)
                                  if k == key)
                     axes[4].scatter(sub["conf_img"], sub["conf_md"], c=color,
                                     label=label, alpha=0.7, s=30, edgecolors="none")
@@ -860,8 +992,8 @@ def _plot_cross_fold_fusion_summary(df_sum: pd.DataFrame, run_dir: Path) -> None
                     axes[4].scatter(sub["conf_img"], sub["conf_md"], c=conc_color,
                                     alpha=0.3, s=15, edgecolors="none", label=conc_label)
             axes[4].plot([0, 1], [0, 1], "k--", linewidth=0.5, alpha=0.4)
-            axes[4].set_xlabel("conf_img")
-            axes[4].set_ylabel("conf_md")
+            axes[4].set_xlabel(f"conf_{comp_a}")
+            axes[4].set_ylabel(f"conf_{comp_b}")
             axes[4].legend(fontsize=6, loc="lower right")
         axes[4].set_title("Tower confidence space\n(all folds)")
 
@@ -1104,6 +1236,12 @@ def main():
         # free GPU memory between folds
         del model
         torch.cuda.empty_cache()
+
+    # ---- Cross-fold MD importance summary ----
+    if not args.no_phase1:
+        print(f"\n{'='*60}", flush=True)
+        print("[explain_run] === Cross-fold MD importance summary ===", flush=True)
+        _plot_run_md_importance_summary(run_dir, folds)
 
     # ---- Cross-fold Phase 3 summary ----
     if all_phase3_summaries and not args.no_phase3:

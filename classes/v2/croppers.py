@@ -82,7 +82,9 @@ class UNetImageCropper:
 
     def _infer_masks(self, image: Image.Image) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         resized = self.segmenter.preprocess_image(image)
-        tensor = self.to_tensor(resized).unsqueeze(0).to(self.segmenter.device)
+        tensor = self.segmenter._normalize_tensor(
+            self.to_tensor(resized).to(self.segmenter.device)
+        ).unsqueeze(0)
 
         with torch.no_grad():
             logits = self.segmenter.model(tensor)

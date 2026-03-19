@@ -283,6 +283,7 @@ def train_single_epoch(
     *,
     phase: str,
     bcd_prob: float = 0.5,
+    tower_loss_mode: str = "bcd",
 ) -> tuple[float, float]:
     model.train()
     _set_single_phase(model, phase)
@@ -337,6 +338,11 @@ def train_single_epoch(
             elif bridge_mode == "image_only":
                 logits = model.bridge.classifier_img(img_feats)
                 loss = F.cross_entropy(logits, y)
+            elif tower_loss_mode == "all":
+                loss_i = F.cross_entropy(model.bridge.classifier_img(img_feats), y)
+                loss_m = F.cross_entropy(model.bridge.classifier_md(md_feats), y)
+                logits, _, _ = model.bridge(img_feats, md_feats)
+                loss = F.cross_entropy(logits, y) + loss_i + loss_m
             elif random() < bcd_prob:
                 if random() < 0.5:
                     logits = model.bridge.classifier_img(img_feats)
@@ -368,6 +374,7 @@ def train_bilateral_epoch(
     *,
     phase: str,
     bcd_prob: float = 0.5,
+    tower_loss_mode: str = "bcd",
 ) -> tuple[float, float]:
     model.train()
     _set_bilateral_phase(model, phase)
@@ -394,7 +401,12 @@ def train_bilateral_epoch(
             logits, _, _ = model.bridge(joint_img, joint_md)
             loss = F.cross_entropy(logits, y)
         else:
-            if random() < bcd_prob:
+            if tower_loss_mode == "all":
+                loss_i = F.cross_entropy(model.aux_img(joint_img), y)
+                loss_m = F.cross_entropy(model.aux_md(joint_md), y)
+                logits, _, _ = model.bridge(joint_img, joint_md)
+                loss = F.cross_entropy(logits, y) + loss_i + loss_m
+            elif random() < bcd_prob:
                 if random() < 0.5:
                     logits = model.aux_img(joint_img)
                 else:
