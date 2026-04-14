@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--rep-seed-step", type=int, default=100,
         help="Increment between rep fold-seeds (default: 100; rep k uses seed start + k*step).",
     )
+    ap.add_argument(
+        "--rep-index", type=int, default=None,
+        help="Override the rep directory index (e.g. 3 → rep03). "
+             "Used by the distributed server to run a single rep of a multi-rep job.",
+    )
     return ap
 
 
@@ -65,22 +70,24 @@ def main():
     seed_start     = int(args.rep_seed_start)
     seed_step      = int(args.rep_seed_step)
     base_run_name  = args.run_name or "v3_cv"
+    rep_index_override = getattr(args, "rep_index", None)
 
     for rep in range(reps):
         rep_seed = seed_start + rep * seed_step
         args.fold_seed = rep_seed
 
-        if reps > 1:
-            args.run_name = f"{base_run_name}/rep{rep:02d}"
+        dir_index = rep_index_override if (rep_index_override is not None and reps == 1) else rep
+        if reps > 1 or rep_index_override is not None:
+            args.run_name = f"{base_run_name}/rep{dir_index:02d}"
             print(f"\n{'='*60}", flush=True)
-            print(f"Rep {rep+1}/{reps}  fold_seed={rep_seed}", flush=True)
+            print(f"Rep {dir_index+1}  fold_seed={rep_seed}", flush=True)
             print(f"{'='*60}", flush=True)
         else:
             args.run_name = base_run_name
 
         tower = V3HyperTower(args)
         out_dir = tower.run()
-        print(f"\nRep {rep+1} output: {out_dir}", flush=True)
+        print(f"\nRep {dir_index+1} output: {out_dir}", flush=True)
 
 
 if __name__ == "__main__":

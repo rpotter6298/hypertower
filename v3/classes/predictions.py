@@ -31,6 +31,8 @@ def head_names_for_mode(tower_mode: str, *, fused_head: bool = False) -> list[st
         return names + ["bilat_fused"] if fused_head else names
     if tower_mode == "bilateral":
         return ["fused", "img_joint", "md_joint"]
+    if tower_mode == "siamese":
+        return ["fused"]
     raise ValueError(f"Unknown tower_mode: {tower_mode!r}")
 
 

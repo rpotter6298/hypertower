@@ -1,0 +1,362 @@
+{
+  "_notes": [
+    "All runs use single-eye tower mode, binary eval, 10x5 rep-CV.",
+    "common_args are prepended to every run's args list.",
+    "Entries marked 'needs_implementation' require small code changes before running (noted inline).",
+    "Bridge fusion uses elementwise product of projected image/clinical features.",
+    "SE infrastructure exists in Bridge/ImageTower/ClinicalTower but use_se is hardcoded False",
+    "  in SingleEyeHT \u2014 add --se-img-tower / --se-cd-tower / --se-bridge flags to wire through.",
+    "Dropout is hardcoded: Bridge classifier=0.5, ClinicalTower=0.1 \u2014 add --bridge-dropout /",
+    "  --cd-dropout flags to make configurable."
+  ],
+  "common_args": [
+    "--eval-mode",
+    "binary",
+    "--tower-mode",
+    "single",
+    "--epochs",
+    "30",
+    "--in-memory-cache",
+    "--augment",
+    "--tune-binary-threshold",
+    "--backbone",
+    "refugelike",
+    "--output-root",
+    "v3/results"
+  ],
+  "_common_args_implicit_defaults": {
+    "--bridge-mode": "fused",
+    "--tower-loss-mode": "bcd",
+    "--bcd-prob": "0.5",
+    "--warmup-cd-epochs": "40",
+    "--single-warmup-tower-epochs": "3",
+    "--single-warmup-fused-epochs": "3"
+  },
+  "baseline": {
+    "run_name": "phase3/baseline",
+    "description": "Fused bridge (image+clinical), BCD p=0.5, cd_warmup=40, tower/fused warmup=3/3, no SE, no IOP correction.",
+    "extra_args": []
+  },
+  "groups": [
+    {
+      "name": "loss_function",
+      "description": "Test BCD loss variants vs cross-entropy baseline.",
+      "runs": [
+        {
+          "run_name": "phase3/loss_all",
+          "description": "All-losses mode (cross-entropy on all three heads every step).",
+          "extra_args": [
+            "--tower-loss-mode",
+            "all"
+          ]
+        },
+        {
+          "run_name": "phase3/loss_bcd_p03",
+          "description": "BCD with lower switching probability (more CE, less BCD).",
+          "extra_args": [
+            "--tower-loss-mode",
+            "bcd",
+            "--bcd-prob",
+            "0.3"
+          ]
+        },
+        {
+          "run_name": "phase3/loss_bcd_p07",
+          "description": "BCD with higher switching probability (more BCD, less CE).",
+          "extra_args": [
+            "--tower-loss-mode",
+            "bcd",
+            "--bcd-prob",
+            "0.7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "se_attention",
+      "description": "Squeeze-and-excitation gates at different points in the network.",
+      "runs": [
+        {
+          "run_name": "phase3/se_bridge",
+          "description": "SE gate on fused vector inside the bridge only.",
+          "extra_args": [
+            "--se-bridge"
+          ]
+        },
+        {
+          "run_name": "phase3/se_img_tower",
+          "description": "SE gate on image tower output features.",
+          "extra_args": [
+            "--se-img-tower"
+          ]
+        },
+        {
+          "run_name": "phase3/se_cd_tower",
+          "description": "SE gate on clinical tower output features.",
+          "extra_args": [
+            "--se-cd-tower"
+          ]
+        },
+        {
+          "run_name": "phase3/se_all",
+          "description": "SE gates on image tower, clinical tower, and bridge.",
+          "extra_args": [
+            "--se-img-tower",
+            "--se-cd-tower",
+            "--se-bridge"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "iop_correction",
+      "description": "Test different IOP measurement correction strategies (default: no correction).",
+      "runs": [
+        {
+          "run_name": "phase3/iop_ratio",
+          "description": "IOP correction via Perkins\u2192Pneumatic ratio scaling.",
+          "extra_args": [
+            "--iop-corr-method",
+            "ratio"
+          ]
+        },
+        {
+          "run_name": "phase3/iop_ols",
+          "description": "IOP correction via OLS regression.",
+          "extra_args": [
+            "--iop-corr-method",
+            "ols"
+          ]
+        },
+        {
+          "run_name": "phase3/iop_lad",
+          "description": "IOP correction via LAD (robust to outliers) regression.",
+          "extra_args": [
+            "--iop-corr-method",
+            "lad"
+          ]
+        },
+        {
+          "run_name": "phase3/iop_multi",
+          "description": "IOP correction via multivariate regression including pachymetry.",
+          "extra_args": [
+            "--iop-corr-method",
+            "multi"
+          ]
+        },
+        {
+          "run_name": "phase3/iop_ratio_drop_raw",
+          "description": "Ratio correction + drop raw IOP (only corrected IOP seen by model).",
+          "extra_args": [
+            "--iop-corr-method",
+            "ratio",
+            "--iop-drop-raw"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "feature_ablation",
+      "description": "Exclude individual clinical features to measure each one's contribution.",
+      "runs": [
+        {
+          "run_name": "phase3/excl_iop",
+          "description": "No IOP features \u2014 tests how much intraocular pressure contributes.",
+          "extra_args": [
+            "--exclude-cols",
+            "IOP",
+            "Pachymetry"
+          ]
+        },
+        {
+          "run_name": "phase3/excl_age",
+          "description": "No age feature.",
+          "extra_args": [
+            "--exclude-cols",
+            "Age"
+          ]
+        },
+        {
+          "run_name": "phase3/excl_axial_length",
+          "description": "No axial length feature.",
+          "extra_args": [
+            "--exclude-cols",
+            "Axial_Length"
+          ]
+        },
+        {
+          "run_name": "phase3/excl_refractive",
+          "description": "No refractive defect feature.",
+          "extra_args": [
+            "--exclude-cols",
+            "Refractive_Defect"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "network_dims",
+      "description": "Test sensitivity to clinical tower and bridge fusion dimensionality.",
+      "runs": [
+        {
+          "run_name": "phase3/cd_hidden_64",
+          "description": "Smaller clinical tower (64 hidden units vs default 128).",
+          "extra_args": [
+            "--cd-hidden-dim",
+            "64"
+          ]
+        },
+        {
+          "run_name": "phase3/cd_hidden_256",
+          "description": "Larger clinical tower (256 hidden units vs default 128).",
+          "extra_args": [
+            "--cd-hidden-dim",
+            "256"
+          ]
+        },
+        {
+          "run_name": "phase3/fusion_dim_128",
+          "description": "Smaller fusion space (128 vs default 256).",
+          "extra_args": [
+            "--fusion-dim",
+            "128"
+          ]
+        },
+        {
+          "run_name": "phase3/fusion_dim_512",
+          "description": "Larger fusion space (512 vs default 256).",
+          "extra_args": [
+            "--fusion-dim",
+            "512"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "backbone_freezing",
+      "description": "Partial backbone freezing to reduce overfitting and speed training.",
+      "runs": [
+        {
+          "run_name": "phase3/freeze_25",
+          "description": "Freeze earliest 25% of backbone blocks.",
+          "extra_args": [
+            "--freeze-ratio",
+            "0.25"
+          ]
+        },
+        {
+          "run_name": "phase3/freeze_50",
+          "description": "Freeze earliest 50% of backbone blocks.",
+          "extra_args": [
+            "--freeze-ratio",
+            "0.50"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "learning_rate",
+      "description": "Test LR sensitivity (default 1e-4).",
+      "runs": [
+        {
+          "run_name": "phase3/lr_1e3",
+          "description": "Higher learning rate 1e-3.",
+          "extra_args": [
+            "--lr",
+            "1e-3"
+          ]
+        },
+        {
+          "run_name": "phase3/lr_3e4",
+          "description": "Intermediate learning rate 3e-4.",
+          "extra_args": [
+            "--lr",
+            "3e-4"
+          ]
+        },
+        {
+          "run_name": "phase3/lr_1e5",
+          "description": "Lower learning rate 1e-5.",
+          "extra_args": [
+            "--lr",
+            "1e-5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dropout",
+      "description": "Test bridge classifier and clinical tower dropout rates.",
+      "runs": [
+        {
+          "run_name": "phase3/bridge_dropout_03",
+          "description": "Reduce bridge classifier dropout from 0.5 to 0.3.",
+          "extra_args": [
+            "--bridge-dropout",
+            "0.3"
+          ]
+        },
+        {
+          "run_name": "phase3/bridge_dropout_07",
+          "description": "Increase bridge classifier dropout to 0.7.",
+          "extra_args": [
+            "--bridge-dropout",
+            "0.7"
+          ]
+        },
+        {
+          "run_name": "phase3/cd_dropout_03",
+          "description": "Increase clinical tower dropout from 0.1 to 0.3.",
+          "extra_args": [
+            "--cd-dropout",
+            "0.3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "warmup",
+      "description": "Test warmup ablations vs default (cd=40, tower/fused=3/3).",
+      "runs": [
+        {
+          "run_name": "phase3/warmup_no_cd",
+          "description": "No CD warmup (cd=0) \u2014 tests whether the 40-epoch CD warmup is necessary.",
+          "extra_args": [
+            "--warmup-cd-epochs",
+            "0"
+          ]
+        },
+        {
+          "run_name": "phase3/warmup_tower5_fused5",
+          "description": "Extended tower/fused warmup (5/5 vs default 3/3).",
+          "extra_args": [
+            "--single-warmup-tower-epochs",
+            "5",
+            "--single-warmup-fused-epochs",
+            "5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sampling_augmentation",
+      "description": "Test data sampling and augmentation choices.",
+      "runs": [
+        {
+          "run_name": "phase3/no_augment",
+          "description": "No augmentation \u2014 baseline images only.",
+          "extra_args": [
+            "--no-augment"
+          ]
+        },
+        {
+          "run_name": "phase3/balanced_sampling",
+          "description": "Weighted balanced sampler to counter class imbalance.",
+          "extra_args": [
+            "--balanced-sampling"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "_notes": [
+    "Phase 4 — Dual CNN architecture comparison (image only).",
+    "Goal: isolate the effect of bilateral processing by comparing architectures without clinical data.",
+    "Best settings from phase 3 carried forward: iop_ratio_drop_raw, bcd_p05 (p07 did not stack).",
+    "common_args are prepended to every run's args list.",
+    "All runs use --bridge-mode image_only — no clinical data."
+  ],
+
+  "common_args": [
+    "--eval-mode", "binary",
+    "--bridge-mode", "image_only",
+    "--epochs", "30",
+    "--in-memory-cache",
+    "--augment",
+    "--tune-binary-threshold",
+    "--backbone", "refugelike",
+    "--iop-corr-method", "ratio",
+    "--iop-drop-raw",
+    "--output-root", "v3/results"
+  ],
+
+  "_common_args_implicit_defaults": {
+    "--tower-loss-mode": "bcd",
+    "--bcd-prob": "0.5",
+    "--warmup-cd-epochs": "0",
+    "--bilat-warmup-tower-epochs": "3",
+    "--bilat-warmup-fused-epochs": "3"
+  },
+
+  "baseline": {
+    "run_name": "phase4/single",
+    "description": "Single-eye baseline with best phase 3 image settings. Direct comparison point for bilateral modes.",
+    "extra_args": ["--tower-mode", "single"]
+  },
+
+  "groups": [
+    {
+      "name": "architecture",
+      "description": "Core bilateral architecture comparison.",
+      "runs": [
+        {
+          "run_name": "phase4/ensemble",
+          "description": "Ensemble: two independent single-eye forward passes, patient-level average of OD+OS scores.",
+          "extra_args": ["--tower-mode", "ensemble"]
+        },
+        {
+          "run_name": "phase4/bilateral",
+          "description": "BilateralHT: shared towers, concat OD+OS → learned joint projection MLP → classifier.",
+          "extra_args": ["--tower-mode", "bilateral"]
+        },
+        {
+          "run_name": "phase4/siamese",
+          "description": "SiameseHT: shared backbone, mean+delta (asymmetry) representation → classifier.",
+          "extra_args": ["--tower-mode", "siamese"]
+        }
+      ]
+    },
+
+    {
+      "name": "loss_bilateral",
+      "description": "Test loss function sensitivity in bilateral modes (using winner from architecture group).",
+      "runs": [
+        {
+          "run_name": "phase4/bilateral_loss_all",
+          "description": "BilateralHT with all-losses mode — joint training dynamics may differ from single-eye.",
+          "extra_args": ["--tower-mode", "bilateral", "--tower-loss-mode", "all"]
+        },
+        {
+          "run_name": "phase4/siamese_loss_all",
+          "description": "SiameseHT with all-losses mode.",
+          "extra_args": ["--tower-mode", "siamese", "--tower-loss-mode", "all"]
+        }
+      ]
+    }
+  ]
+}

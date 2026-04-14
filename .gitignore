@@ -13,3 +13,5 @@ models/v2/refuge/
 .archive/
 scripts/deprecated/
 v3/results/*
+scripts/utility/backup_mirror_with_archive.sh
+v3/distributed/logs/*

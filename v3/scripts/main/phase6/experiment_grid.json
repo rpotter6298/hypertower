@@ -1,0 +1,144 @@
+{
+  "_notes": [
+    "Phase 6 — Geometry augmentation: vector injection and dedicated geometry tower.",
+    "Goal: test whether derived structural geometry (CDR, rim ratio, etc.) improves performance",
+    "  injected either as a 5-dim vector appended to the clinical stream (Part A)",
+    "  or as a dedicated geometry tower feeding into bridge fusion (Part B).",
+    "Tower modes under test: single, ensemble, fused-head (ensemble + --fused-head).",
+    "Geometry sources: GT contour annotations (no annotator-bias concern at this stage —",
+    "  labels were assigned by same clinicians, GT seg merely measures CDR directly)",
+    "  and U-Net segmentations (REFUGE-trained, fine-tuned on PAPILA folds — unbiased).",
+    "Part A (geometry_vector): vector injection — dispatch_phase6a.py covers this.",
+    "  Requires: --geometry-dim and --geometry-source wired into v3_hypertower.py.",
+    "Part B (geometry_tower): dedicated geometry tower — needs architecture implementation.",
+    "  Will get its own dispatch_phase6b.py once built.",
+    "Ensemble and fused-head baselines come from phase5. Single has no equivalent with all tuned",
+    "  hyperparameters, so a phase6 single baseline is included here.",
+    "Best settings from all prior phases: refugelike backbone, iop_ratio_drop_raw, bcd_p05.",
+    "Geometry features: [area_cdr, rim_ratio, vertical_cdr, horizontal_cdr, centre_shift] (dim=5).",
+    "common_args are prepended to every run's args list."
+  ],
+
+  "common_args": [
+    "--eval-mode", "binary",
+    "--bridge-mode", "fused",
+    "--epochs", "30",
+    "--in-memory-cache",
+    "--augment",
+    "--tune-binary-threshold",
+    "--backbone", "refugelike",
+    "--iop-corr-method", "ratio",
+    "--iop-drop-raw",
+    "--exclude-cols", "Axial_Length",
+    "--img-crop-manifest", "manifest.csv",
+    "--output-root", "v3/results"
+  ],
+
+  "_common_args_implicit_defaults": {
+    "--tower-loss-mode": "bcd",
+    "--bcd-prob": "0.5",
+    "--warmup-cd-epochs": "40",
+    "--single-warmup-tower-epochs": "3",
+    "--single-warmup-fused-epochs": "3",
+    "--bilat-warmup-tower-epochs": "3",
+    "--bilat-warmup-fused-epochs": "3"
+  },
+
+  "baseline": {
+    "run_name": "phase6/single_no_geom",
+    "description": "Single-eye + clinical data, no geometry — needed as Phase 6 baseline since no prior phase ran single with all tuned hyperparameters (iop_ratio_drop_raw, bcd_p05, refugelike).",
+    "extra_args": ["--tower-mode", "single"]
+  },
+
+  "groups": [
+    {
+      "name": "geometry_vector_gt",
+      "description": "Part A — Inject 5-dim geometry vector from GT annotations alongside clinical data. Three aggregation modes: single-eye, ensemble (independent OD+OS), ensemble with fused head.",
+      "runs": [
+        {
+          "run_name": "phase6/vec_gt_single",
+          "description": "Single-eye + clinical + GT geometry vector appended to clinical stream.",
+          "extra_args": ["--tower-mode", "single", "--geometry-dim", "5", "--geometry-source", "gt"]
+        },
+        {
+          "run_name": "phase6/vec_gt_ensemble",
+          "description": "Ensemble + clinical + GT geometry vector (per-eye geometry, independent OD+OS mean).",
+          "extra_args": ["--tower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "gt"]
+        },
+        {
+          "run_name": "phase6/vec_gt_fused_head",
+          "description": "Ensemble + fused head + clinical + GT geometry vector.",
+          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "gt"]
+        }
+      ]
+    },
+
+    {
+      "name": "geometry_vector_unet",
+      "description": "Part A — Same three modes but geometry from U-Net segmentations (REFUGE-trained, fine-tuned). Tests whether GT annotator bias affects the geometry signal.",
+      "runs": [
+        {
+          "run_name": "phase6/vec_unet_single",
+          "description": "Single-eye + clinical + U-Net geometry vector.",
+          "extra_args": ["--tower-mode", "single", "--geometry-dim", "5", "--geometry-source", "unet"]
+        },
+        {
+          "run_name": "phase6/vec_unet_ensemble",
+          "description": "Ensemble + clinical + U-Net geometry vector.",
+          "extra_args": ["--tower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "unet"]
+        },
+        {
+          "run_name": "phase6/vec_unet_fused_head",
+          "description": "Ensemble + fused head + clinical + U-Net geometry vector.",
+          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "unet"]
+        }
+      ]
+    },
+
+    {
+      "name": "geometry_tower_gt",
+      "description": "Part B — Dedicated geometry tower (MLP on 5-dim vector, separate from clinical tower) with GT geometry. Requires tri-tower bridge architecture.",
+      "needs_implementation": "Geometry tower not yet built — requires GeometryTower MLP, bridge reconfiguration for n>=3 towers, and --geometry-tower CLI flag.",
+      "runs": [
+        {
+          "run_name": "phase6/tower_gt_single",
+          "description": "Single-eye + clinical tower + dedicated GT geometry tower.",
+          "extra_args": ["--tower-mode", "single", "--geometry-tower", "--geometry-source", "gt"]
+        },
+        {
+          "run_name": "phase6/tower_gt_ensemble",
+          "description": "Ensemble + clinical tower + dedicated GT geometry tower.",
+          "extra_args": ["--tower-mode", "ensemble", "--geometry-tower", "--geometry-source", "gt"]
+        },
+        {
+          "run_name": "phase6/tower_gt_fused_head",
+          "description": "Ensemble + fused head + clinical tower + dedicated GT geometry tower.",
+          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "gt"]
+        }
+      ]
+    },
+
+    {
+      "name": "geometry_tower_unet",
+      "description": "Part B — Same three modes with dedicated geometry tower, U-Net geometry source.",
+      "needs_implementation": "Geometry tower not yet built — requires GeometryTower MLP, bridge reconfiguration for n>=3 towers, and --geometry-tower CLI flag.",
+      "runs": [
+        {
+          "run_name": "phase6/tower_unet_single",
+          "description": "Single-eye + clinical tower + dedicated U-Net geometry tower.",
+          "extra_args": ["--tower-mode", "single", "--geometry-tower", "--geometry-source", "unet"]
+        },
+        {
+          "run_name": "phase6/tower_unet_ensemble",
+          "description": "Ensemble + clinical tower + dedicated U-Net geometry tower.",
+          "extra_args": ["--tower-mode", "ensemble", "--geometry-tower", "--geometry-source", "unet"]
+        },
+        {
+          "run_name": "phase6/tower_unet_fused_head",
+          "description": "Ensemble + fused head + clinical tower + dedicated U-Net geometry tower.",
+          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "unet"]
+        }
+      ]
+    }
+  ]
+}

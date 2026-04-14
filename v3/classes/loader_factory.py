@@ -211,6 +211,7 @@ def make_loader(
     shuffle: bool,
     num_workers: int,
     sampler: Optional[WeightedRandomSampler] = None,
+    persistent_workers: bool = False,
 ) -> DataLoader:
     ds = SlotDataset(
         samples,
@@ -226,6 +227,7 @@ def make_loader(
         sampler=sampler,
         num_workers=num_workers,
         collate_fn=slot_collate,
+        persistent_workers=(persistent_workers and num_workers > 0),
     )
 
 

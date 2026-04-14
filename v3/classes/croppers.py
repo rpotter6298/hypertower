@@ -189,6 +189,31 @@ class UNetImageCropper:
             return None
         return np.asarray(features, dtype=np.float32)
 
+    def precompute_geometry(self, image_paths) -> None:
+        """Pre-compute geometry features for all image_paths into an in-memory cache.
+        Safe to call in the main process; geometry_for_image() can then be called
+        from DataLoader workers without touching CUDA.
+        """
+        self._geometry_cache: Dict[str, Optional[np.ndarray]] = {}
+        paths = list(image_paths)
+        print(f"[UNetImageCropper] pre-computing geometry for {len(paths)} images...", flush=True)
+        for img_path in paths:
+            key = str(Path(img_path).resolve())
+            try:
+                img = Image.open(img_path).convert("RGB")
+                self._geometry_cache[key] = self.geometry_features(img, img_path)
+            except Exception:
+                self._geometry_cache[key] = None
+        n_ok = sum(1 for v in self._geometry_cache.values() if v is not None)
+        print(f"[UNetImageCropper] {n_ok}/{len(paths)} geometry vectors computed", flush=True)
+
+    def geometry_for_image(self, image_path) -> Optional[np.ndarray]:
+        """Return pre-computed geometry vector for image_path (call precompute_geometry first)."""
+        cache = getattr(self, "_geometry_cache", None)
+        if cache is None:
+            raise RuntimeError("Call precompute_geometry() before geometry_for_image()")
+        return cache.get(str(Path(image_path).resolve()))
+
 
 class ManifestImageCropper:
     def __init__(
@@ -370,6 +395,35 @@ class ManifestImageCropper:
         if features is None:
             return None
         return np.asarray(features, dtype=np.float32)
+
+    def precompute_geometry(self, image_paths) -> None:
+        """Pre-compute geometry features for all image_paths into an in-memory cache.
+        Safe to call in the main process; geometry_for_image() can then be called
+        without re-opening images or re-loading annotations.
+        """
+        self._geometry_cache: Dict[str, Optional[np.ndarray]] = {}
+        paths = list(image_paths)
+        print(f"[ManifestImageCropper] pre-computing geometry for {len(paths)} images...", flush=True)
+        for img_path in paths:
+            key = str(Path(img_path).resolve())
+            entry = self.entries.get(key)
+            if entry is None:
+                self._geometry_cache[key] = None
+                continue
+            try:
+                img = Image.open(img_path).convert("RGB")
+                self._geometry_cache[key] = self.geometry_features(img, img_path)
+            except Exception:
+                self._geometry_cache[key] = None
+        n_ok = sum(1 for v in self._geometry_cache.values() if v is not None)
+        print(f"[ManifestImageCropper] {n_ok}/{len(paths)} geometry vectors computed", flush=True)
+
+    def geometry_for_image(self, image_path) -> Optional[np.ndarray]:
+        """Return pre-computed geometry vector for image_path (call precompute_geometry first)."""
+        cache = getattr(self, "_geometry_cache", None)
+        if cache is None:
+            raise RuntimeError("Call precompute_geometry() before geometry_for_image()")
+        return cache.get(str(Path(image_path).resolve()))
 
 
 # ---------------------------------------------------------------------------

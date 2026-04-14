@@ -83,6 +83,65 @@ def build_patient_split_plans(
     return plans
 
 
+class EyeLevelSplitManager:
+    """
+    Eye-level (leaky) splitter — splits on individual eye rows, ignoring
+    patient grouping.  Same patient's eyes can appear in different folds.
+    Used to demonstrate the effect of data leakage.
+    """
+
+    def __init__(
+        self,
+        *,
+        patient_col: str = "Patient ID",
+        label_col: Optional[str] = None,
+    ) -> None:
+        self.patient_col = patient_col
+        self.label_col = label_col
+
+    def build_plans(
+        self,
+        *,
+        clinical: Any,
+        args: Any,
+        profile: Optional[Any] = None,
+    ) -> list[PatientSplit]:
+        profile_label_col = getattr(profile, "label_col", None) if profile is not None else None
+        label_col = self.label_col or profile_label_col or getattr(clinical, "label_col", None)
+        if label_col is None:
+            raise ValueError("Could not resolve label column")
+
+        if not hasattr(clinical, "df"):
+            raise ValueError("Clinical object must expose a dataframe at .df")
+        df_full = clinical.df.copy().reset_index(drop=True)
+
+        eval_mode = str(getattr(args, "eval_mode", "multiclass")).lower()
+        if eval_mode == "binary":
+            df_full = df_full[df_full[label_col].isin([0, 1])].reset_index(drop=True)
+
+        n_splits  = int(getattr(args, "n_splits", 5))
+        fold_seed = int(getattr(args, "fold_seed", 42))
+
+        labels = df_full[label_col].to_numpy()
+        eye_ids = df_full.index.to_numpy()
+
+        # Reuse build_patient_split_plans with eye-row IDs as the "patients"
+        plans = build_patient_split_plans(
+            patient_ids=eye_ids,
+            patient_labels=labels,
+            n_splits=n_splits,
+            seed=fold_seed,
+        )
+
+        out: list[PatientSplit] = []
+        for plan in plans:
+            train_df = df_full[df_full.index.isin(plan.train_patient_ids)].reset_index(drop=True)
+            val_df   = df_full[df_full.index.isin(plan.val_patient_ids)].reset_index(drop=True)
+            test_df  = df_full[df_full.index.isin(plan.test_patient_ids)].reset_index(drop=True)
+            out.append(PatientSplit(train=train_df, val=val_df, test=test_df))
+        return out
+
+
 class PatientFirstSplitManager:
     """Patient-level splitter for V3. Outer/inner k-fold, no holdout."""
 

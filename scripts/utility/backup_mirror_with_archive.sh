@@ -44,7 +44,42 @@ cmd=(
   --delete
   --backup
   --backup-dir="$archive_dir"
+  # Directories with no backup value
+  --exclude=".git/"
+  --exclude=".claude/"
   --exclude=".archive/"
+  # Large datasets stored elsewhere
+  --exclude="refuge/"
+  --exclude="Refuge/"
+  --exclude="REFUGE/"
+  --exclude="papila/"
+  --exclude="Papila/"
+  --exclude="PAPILA/"
+  # Python / general caches
+  --exclude="__pycache__/"
+  --exclude=".mypy_cache/"
+  --exclude=".ruff_cache/"
+  --exclude=".pytest_cache/"
+  --exclude=".cache/"
+  --exclude="*.pyc"
+  --exclude="*.pyo"
+  # Virtual environments
+  --exclude=".venv/"
+  --exclude="venv/"
+  --exclude="env/"
+  # Node
+  --exclude="node_modules/"
+  # Build / dist artifacts
+  --exclude="*.egg-info/"
+  --exclude="dist/"
+  --exclude="build/"
+  --exclude=".eggs/"
+  # IDE / editor metadata
+  --exclude=".idea/"
+  --exclude=".vscode/"
+  # OS metadata
+  --exclude=".DS_Store"
+  --exclude="Thumbs.db"
   "${SOURCE%/}/"
   "${DEST%/}/"
 )
