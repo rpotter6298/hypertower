@@ -8,7 +8,7 @@
 
   "common_args": [
     "--eval-mode", "binary",
-    "--tower-mode", "single",
+    "--hypertower-mode", "single",
     "--epochs", "30",
     "--in-memory-cache",
     "--augment",

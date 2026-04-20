@@ -47,7 +47,7 @@
   "baseline": {
     "run_name": "phase6/single_no_geom",
     "description": "Single-eye + clinical data, no geometry — needed as Phase 6 baseline since no prior phase ran single with all tuned hyperparameters (iop_ratio_drop_raw, bcd_p05, refugelike).",
-    "extra_args": ["--tower-mode", "single"]
+    "extra_args": ["--hypertower-mode", "single"]
   },
 
   "groups": [
@@ -58,17 +58,17 @@
         {
           "run_name": "phase6/vec_gt_single",
           "description": "Single-eye + clinical + GT geometry vector appended to clinical stream.",
-          "extra_args": ["--tower-mode", "single", "--geometry-dim", "5", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "single", "--geometry-dim", "5", "--geometry-source", "gt"]
         },
         {
           "run_name": "phase6/vec_gt_ensemble",
           "description": "Ensemble + clinical + GT geometry vector (per-eye geometry, independent OD+OS mean).",
-          "extra_args": ["--tower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "gt"]
         },
         {
           "run_name": "phase6/vec_gt_fused_head",
           "description": "Ensemble + fused head + clinical + GT geometry vector.",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "gt"]
         }
       ]
     },
@@ -80,17 +80,17 @@
         {
           "run_name": "phase6/vec_unet_single",
           "description": "Single-eye + clinical + U-Net geometry vector.",
-          "extra_args": ["--tower-mode", "single", "--geometry-dim", "5", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "single", "--geometry-dim", "5", "--geometry-source", "unet"]
         },
         {
           "run_name": "phase6/vec_unet_ensemble",
           "description": "Ensemble + clinical + U-Net geometry vector.",
-          "extra_args": ["--tower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--geometry-dim", "5", "--geometry-source", "unet"]
         },
         {
           "run_name": "phase6/vec_unet_fused_head",
           "description": "Ensemble + fused head + clinical + U-Net geometry vector.",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--geometry-dim", "5", "--geometry-source", "unet"]
         }
       ]
     },
@@ -103,17 +103,17 @@
         {
           "run_name": "phase6/tower_gt_single",
           "description": "Single-eye + clinical tower + dedicated GT geometry tower.",
-          "extra_args": ["--tower-mode", "single", "--geometry-tower", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "single", "--geometry-tower", "--geometry-source", "gt"]
         },
         {
           "run_name": "phase6/tower_gt_ensemble",
           "description": "Ensemble + clinical tower + dedicated GT geometry tower.",
-          "extra_args": ["--tower-mode", "ensemble", "--geometry-tower", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--geometry-tower", "--geometry-source", "gt"]
         },
         {
           "run_name": "phase6/tower_gt_fused_head",
           "description": "Ensemble + fused head + clinical tower + dedicated GT geometry tower.",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "gt"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "gt"]
         }
       ]
     },
@@ -126,17 +126,17 @@
         {
           "run_name": "phase6/tower_unet_single",
           "description": "Single-eye + clinical tower + dedicated U-Net geometry tower.",
-          "extra_args": ["--tower-mode", "single", "--geometry-tower", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "single", "--geometry-tower", "--geometry-source", "unet"]
         },
         {
           "run_name": "phase6/tower_unet_ensemble",
           "description": "Ensemble + clinical tower + dedicated U-Net geometry tower.",
-          "extra_args": ["--tower-mode", "ensemble", "--geometry-tower", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--geometry-tower", "--geometry-source", "unet"]
         },
         {
           "run_name": "phase6/tower_unet_fused_head",
           "description": "Ensemble + fused head + clinical tower + dedicated U-Net geometry tower.",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "unet"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--geometry-tower", "--geometry-source", "unet"]
         }
       ]
     }

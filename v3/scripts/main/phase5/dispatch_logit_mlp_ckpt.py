@@ -38,7 +38,7 @@ N_REPS         = 10
 RUN_ARGS = [
     "--eval-mode",            "binary",
     "--bridge-mode",          "fused",
-    "--tower-mode",           "ensemble",
+    "--hypertower-mode",           "ensemble",
     "--fused-head",
     "--head-type",            "logit_mlp",
     "--epochs",               "30",

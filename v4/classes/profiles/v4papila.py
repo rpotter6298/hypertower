@@ -1,0 +1,663 @@
+"""v4papila — self-contained PAPILA data module.
+
+Public contract (v4 orchestrator interface)
+-------------------------------------------
+    bundle = build_data(args: dict) -> PapilaBundle
+
+PapilaBundle exposes:
+    .df                     full preprocessed DataFrame (for split building)
+    .label_col, .patient_col, .feature_dim
+    .id_names               tuple of semantic names for each entity_id slot
+                            e.g. ("patient_id", "eye") — used by orchestrator for logging
+    .matrix                 ClinicalDataView (all eyes)
+    .matrix.od / .matrix.os scoped views (OD or OS only)
+    .image                  ImageDataView (all eyes)
+    .image.od  / .image.os  scoped views
+    .build_shells(df, *, level) -> LoaderShell
+
+DataView interface (consumed by towers' get_sample)
+----------------------------------------------------
+Both views accept positional id slots (*ids) matching entity_id tuple positions.
+Semantic names for each position are in view.id_names.
+
+ClinicalDataView:
+    .feature_dim
+    .id_names               e.g. ("patient_id", "eye")
+    .vectorize_entity(*ids) -> np.ndarray
+    .side_map               -> dict mapping generic keys {"a", "b"} to id_1 values
+    .od, .os                -> scoped ClinicalDataView
+
+ImageDataView:
+    .id_names               e.g. ("patient_id", "eye")
+    .get_image_path(*ids)   -> Path
+    .load_image(*ids)       -> PIL.Image
+    .side_map               -> dict mapping generic keys {"a", "b"} to id_1 values
+    .od, .os                -> scoped ImageDataView
+"""
+from __future__ import annotations
+
+import sys
+from functools import cached_property
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
+
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from v4.classes.loaders.image_loader import CachedImageLoader, call_preprocessor
+from v4.classes.dataset import DataBundle, LoaderShell, ShellEntry
+
+
+# ---------------------------------------------------------------------------
+# Pachymetry → IOP correction (PAPILA Table 3)
+# ---------------------------------------------------------------------------
+
+_PACHY_TABLE: Dict[int, int] = {
+    475: +5, 485: +4, 495: +4, 505: +3, 515: +2,
+    525: +1, 535: +1, 545:  0, 555: -1, 565: -1,
+    575: -2, 585: -3, 595: -4, 605: -4, 615: -5,
+}
+_PACHY_KEYS = np.array(sorted(_PACHY_TABLE.keys()))
+
+
+def _nearest_pachy_key(x: float) -> int:
+    return int(_PACHY_KEYS[int(np.argmin(np.abs(_PACHY_KEYS - float(x))))])
+
+
+def _fit_perkins_converter(
+    frames: List[pd.DataFrame], method: str
+) -> Callable[[float, Optional[float]], float]:
+    combined  = pd.concat(frames, ignore_index=True)
+    paired    = combined.dropna(subset=["Pneumatic", "Perkins"])
+    if len(paired) == 0:
+        raise ValueError("No paired Pneumatic+Perkins rows; cannot fit converter.")
+    pneumatic = paired["Pneumatic"].values.astype(float)
+    perkins   = paired["Perkins"].values.astype(float)
+
+    if method == "ratio":
+        ratio = float((pneumatic / perkins).mean())
+        def _conv(p: float, pachy: Optional[float] = None) -> float:
+            return p * ratio
+        return _conv
+
+    elif method == "ols":
+        from scipy import stats as _stats
+        slope, intercept, *_ = _stats.linregress(perkins, pneumatic)
+        slope, intercept = float(slope), float(intercept)
+        def _conv(p: float, pachy: Optional[float] = None) -> float:
+            return p * slope + intercept
+        return _conv
+
+    elif method == "lad":
+        from scipy import stats as _stats
+        from scipy.optimize import minimize as _minimize
+        slope0, intercept0, *_ = _stats.linregress(perkins, pneumatic)
+        def _lad_loss(params):
+            a, b = params
+            return np.abs(pneumatic - (a * perkins + b)).mean()
+        res = _minimize(_lad_loss, x0=[slope0, intercept0], method="Nelder-Mead")
+        slope, intercept = float(res.x[0]), float(res.x[1])
+        def _conv(p: float, pachy: Optional[float] = None) -> float:
+            return p * slope + intercept
+        return _conv
+
+    elif method == "multi":
+        from numpy.linalg import lstsq as _lstsq
+        pm = combined.dropna(subset=["Pneumatic", "Perkins", "Pachymetry"])
+        if len(pm) == 0:
+            raise ValueError("No Pneumatic+Perkins+Pachymetry rows; cannot fit multi.")
+        pneu  = pm["Pneumatic"].values.astype(float)
+        perk  = pm["Perkins"].values.astype(float)
+        pv    = pm["Pachymetry"].values.astype(float)
+        X     = np.column_stack([perk, pv, np.ones(len(perk))])
+        coeffs, *_ = _lstsq(X, pneu, rcond=None)
+        slope, pachy_coef, intercept = float(coeffs[0]), float(coeffs[1]), float(coeffs[2])
+        fallback = float(pv.mean())
+        def _conv(p: float, pachy: Optional[float] = None) -> float:
+            pval = pachy if (pachy is not None and not np.isnan(pachy)) else fallback
+            return p * slope + pachy_coef * pval + intercept
+        return _conv
+
+    else:
+        raise ValueError(f"Unknown iop_corr_method: {method!r}. Choose ratio/ols/lad/multi.")
+
+
+def _pick_iop(row: pd.Series, converter: Callable) -> float:
+    pneumatic = row.get("Pneumatic", np.nan)
+    if not pd.isna(pneumatic):
+        return float(pneumatic)
+    perkins = row.get("Perkins", np.nan)
+    if pd.isna(perkins):
+        return np.nan
+    pachy = row.get("Pachymetry", np.nan)
+    return converter(float(perkins), None if pd.isna(pachy) else float(pachy))
+
+
+def _correct_iop(raw_iop: float, pachy: float) -> float:
+    if pd.isna(raw_iop):
+        return np.nan
+    if pd.isna(pachy):
+        return float(raw_iop)
+    key = _nearest_pachy_key(float(pachy))
+    return float(raw_iop) + float(_PACHY_TABLE[key])
+
+
+def _apply_iop_and_drop_md(
+    df: pd.DataFrame, converter: Callable, drop_raw: bool = False
+) -> pd.DataFrame:
+    df["IOP_raw"] = df.apply(lambda row: _pick_iop(row, converter), axis=1)
+    pachy = df.get("Pachymetry", pd.Series(np.nan, index=df.index))
+    df["IOP_corr"] = [
+        _correct_iop(r, p) for r, p in zip(df["IOP_raw"].values, pachy.values)
+    ]
+    drop = [c for c in ("Pneumatic", "Perkins", "VF_MD") if c in df.columns]
+    if drop_raw:
+        drop.append("IOP_raw")
+    if drop:
+        df.drop(columns=drop, inplace=True)
+    return df
+
+
+def _canonicalize_eye_column(df: pd.DataFrame) -> None:
+    if "eyeID" in df.columns:
+        src = "eyeID"
+    else:
+        src = next((c for c in df.columns if "eye" in c.lower()), None)
+        if src is None:
+            df["eyeID"] = "OS"
+            return
+
+    def norm(v):
+        if pd.isna(v):
+            return None
+        x = str(v).strip().upper()
+        if x in {"OS", "L", "LEFT", "0"}:  return "OS"
+        if x in {"OD", "R", "RIGHT", "1"}: return "OD"
+        try:
+            num = int(float(x))
+            return "OD" if num % 2 == 1 else "OS"
+        except Exception:
+            return None
+
+    mapped = df[src].map(norm)
+    uniq   = {u for u in mapped.dropna().unique().tolist()}
+    if not uniq.issubset({"OS", "OD"}):
+        raise ValueError(f"eyeID must be binary; found {sorted(uniq)}")
+    df["eyeID"] = mapped.fillna("OS")
+
+
+# ---------------------------------------------------------------------------
+# DataView classes
+# ---------------------------------------------------------------------------
+
+class ClinicalDataView:
+    """Tabular feature view over a (possibly eye-filtered) clinical DataFrame.
+
+    Exposes feature_dim and vectorize_entity so towers can retrieve
+    feature vectors by entity identity without knowing about the DataFrame.
+
+    Scoped views (OD or OS only) are accessed via .od and .os properties.
+
+    id_names gives semantic labels for each positional slot in an entity_id tuple,
+    e.g. ("patient_id", "eye").  The orchestrator uses this for logging without
+    needing to know PAPILA-specific field names itself.
+    """
+
+    # PAPILA canonical side keys used in ShellEntry entity_ids
+    SIDE_A = "OD"
+    SIDE_B = "OS"
+
+    # Semantic name for each entity_id position (id_0, id_1, ...)
+    id_names: tuple[str, ...] = ("patient_id", "eye")
+
+    def __init__(
+        self,
+        df:           pd.DataFrame,
+        patient_col:  str,
+        scalar_cols:  list[str],
+        cat_cols:     list[str],
+        scalar_stats: dict,
+        cat_maps:     dict,
+        *,
+        eye_filter: str | None = None,  # "OD", "OS", or None (all eyes)
+    ):
+        self._df          = df
+        self.patient_col  = patient_col
+        self.scalar_cols  = scalar_cols
+        self.cat_cols     = cat_cols
+        self.scalar_stats = scalar_stats
+        self.cat_maps     = cat_maps
+        self._eye_filter  = eye_filter
+
+        # Build a (patient_id, eyeID) → row index for fast lookup
+        if "eyeID" in df.columns:
+            self._idx = df.set_index([patient_col, "eyeID"])
+        else:
+            self._idx = df.set_index(patient_col)
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    @property
+    def feature_dim(self) -> int:
+        n_scalar = len(self.scalar_cols)
+        n_cat    = sum(len(m) for m in self.cat_maps.values())
+        return n_scalar + n_cat + n_scalar  # scalars + one-hots + missing flags
+
+    def vectorize_entity(self, *ids) -> np.ndarray:
+        """Return the feature vector for an entity identified by positional ids.
+
+        Positional slots match entity_id tuple positions (see id_names).
+        For PAPILA: ids = (id_0, id_1) = (patient_id, eye).
+        """
+        try:
+            row = self._idx.loc[ids if len(ids) > 1 else ids[0]].copy()
+        except KeyError:
+            names = self.id_names[:len(ids)]
+            raise KeyError(
+                f"ClinicalDataView: no row found for {dict(zip(names, ids))}"
+            )
+        # set_index removes index-level columns from the row; restore any that
+        # _vectorize_row needs (e.g. eyeID is a cat feature AND an index level)
+        idx_names = (self._idx.index.names
+                     if hasattr(self._idx.index, 'names')
+                     else [self._idx.index.name])
+        for name, val in zip(idx_names, ids if len(ids) > 1 else [ids[0]]):
+            if name not in row.index:
+                row[name] = val
+        return self._vectorize_row(row)
+
+    # ── Scoped views ─────────────────────────────────────────────────────────
+
+    @property
+    def side_map(self) -> dict[str, str]:
+        """Generic side-key → dataset side string. Towers use this for patient-level shells."""
+        return {"a": self.SIDE_A, "b": self.SIDE_B}
+
+    @cached_property
+    def od(self) -> "ClinicalDataView":
+        return self._scoped(self.SIDE_A)
+
+    @cached_property
+    def os(self) -> "ClinicalDataView":
+        return self._scoped(self.SIDE_B)
+
+    def _scoped(self, eye: str) -> "ClinicalDataView":
+        sub = self._df[self._df["eyeID"] == eye].reset_index(drop=True)
+        return ClinicalDataView(
+            df=sub,
+            patient_col=self.patient_col,
+            scalar_cols=self.scalar_cols,
+            cat_cols=self.cat_cols,
+            scalar_stats=self.scalar_stats,
+            cat_maps=self.cat_maps,
+            eye_filter=eye,
+        )
+
+    # ── Internal ─────────────────────────────────────────────────────────────
+
+    def _vectorize_row(self, row: pd.Series) -> np.ndarray:
+        feats: list[float] = []
+        miss:  list[float] = []
+        for col in self.scalar_cols:
+            v = pd.to_numeric(row.get(col), errors="coerce")
+            if pd.isna(v):
+                miss.append(1.0)
+                v = self.scalar_stats[col]["median"]
+            else:
+                miss.append(0.0)
+            lo = self.scalar_stats[col]["min"]
+            hi = self.scalar_stats[col]["max"]
+            feats.append((float(v) - lo) / (hi - lo) if hi > lo else 0.0)
+        for col in self.cat_cols:
+            mapping = self.cat_maps[col]
+            one = [0.0] * len(mapping)
+            key = row.get(col)
+            one[mapping.get(key, 0)] = 1.0
+            feats.extend(one)
+        feats.extend(miss)
+        return np.asarray(feats, dtype=np.float32)
+
+
+class ImageDataView:
+    """Image path and loading view over a (possibly eye-filtered) DataFrame.
+
+    Provides get_image_path and load_image keyed by positional id slots.
+    Scoped views (.od, .os) are available for single-side towers.
+    The optional image_cache is a shared CachedImageLoader for the run.
+
+    id_names gives semantic labels for each positional slot in an entity_id tuple,
+    e.g. ("patient_id", "eye").
+    """
+
+    SIDE_A = "OD"
+    SIDE_B = "OS"
+
+    id_names: tuple[str, ...] = ("patient_id", "eye")
+
+    def __init__(
+        self,
+        df:                pd.DataFrame,
+        patient_col:       str,
+        image_dir:         str,
+        filename_template: str,
+        preprocessor:      Callable | None = None,
+        image_cache:       CachedImageLoader | None = None,
+        *,
+        eye_filter: str | None = None,
+    ):
+        self._df               = df
+        self.patient_col       = patient_col
+        self.image_dir         = Path(image_dir)
+        self.filename_template = filename_template
+        self.preprocessor      = preprocessor
+        self.image_cache       = image_cache
+        self._eye_filter       = eye_filter
+
+        if "eyeID" in df.columns:
+            self._idx = df.set_index([patient_col, "eyeID"])
+        else:
+            self._idx = df.set_index(patient_col)
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def get_image_path(self, *ids) -> Path:
+        """Return the image path for an entity identified by positional ids.
+
+        For PAPILA: ids = (id_0, id_1) = (patient_id, eye).
+        """
+        id_0, id_1 = ids  # PAPILA always uses two slots
+        try:
+            row = self._idx.loc[(id_0, id_1)]
+        except KeyError:
+            names = self.id_names[:len(ids)]
+            raise KeyError(
+                f"ImageDataView: no row for {dict(zip(names, ids))}"
+            )
+        pid = int(row[self.patient_col]) if self.patient_col in row.index else int(id_0)
+        return self.image_dir / self.filename_template.format(pid=pid, eye=id_1)
+
+    def load_image(self, *ids) -> Image.Image:
+        """Load image for an entity identified by positional ids."""
+        path = self.get_image_path(*ids)
+        if self.image_cache is not None:
+            return self.image_cache.load(path, preprocessor=self.preprocessor)
+        img = Image.open(path).convert("RGB")
+        if self.preprocessor is not None:
+            img = call_preprocessor(self.preprocessor, img, path)
+        return img
+
+    # ── Scoped views ─────────────────────────────────────────────────────────
+
+    @cached_property
+    def od(self) -> "ImageDataView":
+        return self._scoped(self.SIDE_A)
+
+    @cached_property
+    def os(self) -> "ImageDataView":
+        return self._scoped(self.SIDE_B)
+
+    @property
+    def side_map(self) -> dict[str, str]:
+        """Generic side-key → dataset side string. Towers use this for patient-level shells."""
+        return {"a": self.SIDE_A, "b": self.SIDE_B}
+
+    def _scoped(self, eye: str) -> "ImageDataView":
+        sub = self._df[self._df["eyeID"] == eye].reset_index(drop=True)
+        return ImageDataView(
+            df=sub,
+            patient_col=self.patient_col,
+            image_dir=str(self.image_dir),
+            filename_template=self.filename_template,
+            preprocessor=self.preprocessor,
+            image_cache=self.image_cache,
+            eye_filter=eye,
+        )
+
+
+# ---------------------------------------------------------------------------
+# PapilaBundle — the v4 DataBundle returned by build_data
+# ---------------------------------------------------------------------------
+
+class PapilaBundle:
+    """V4 DataBundle for PAPILA.
+
+    Wraps the v3 DataBundle for backward compatibility (df, feature_dim,
+    vectorize_row, get_image_path, patient_col, label_col) while adding
+    the v4 DataView interface and build_shells().
+    """
+
+    def __init__(
+        self,
+        bundle:       DataBundle,
+        image_dir:    str,
+        preprocessor: Callable | None = None,
+        image_cache:  CachedImageLoader | None = None,
+    ):
+        self._bundle    = bundle
+        self._image_dir = image_dir
+
+        # ── ClinicalDataView (all eyes) ──────────────────────────────────────
+        self.matrix = ClinicalDataView(
+            df=bundle.df,
+            patient_col=bundle.patient_col,
+            scalar_cols=bundle.scalar_cols,
+            cat_cols=bundle.cat_cols,
+            scalar_stats=bundle.scalar_stats,
+            cat_maps=bundle.cat_maps,
+        )
+
+        # ── ImageDataView (all eyes) ─────────────────────────────────────────
+        self.image = ImageDataView(
+            df=bundle.df,
+            patient_col=bundle.patient_col,
+            image_dir=image_dir,
+            filename_template=bundle.filename_template,
+            preprocessor=preprocessor,
+            image_cache=image_cache,
+        )
+
+    # ── Entity-id metadata (for orchestrator logging) ────────────────────────
+
+    @property
+    def id_names(self) -> tuple[str, ...]:
+        """Semantic names for each entity_id position, e.g. ('patient_id', 'eye').
+
+        Orchestrators use this to decode entity_ids for logging without
+        hardcoding dataset-specific field names.
+        """
+        return self.matrix.id_names  # both views share the same structure
+
+    # ── Identity column registry (for orchestrator split_identity_level) ────────
+
+    @property
+    def identity_cols(self) -> list[str]:
+        """Ordered list of grouping columns, one per identity level.
+
+        identity_level=1 → identity_cols[0] → patient column (group by patient)
+        identity_level=2 → identity_cols[1] → eye column (group by patient+eye)
+        """
+        return [self._bundle.patient_col, "eyeID"]
+
+    # ── Backward-compat delegates ────────────────────────────────────────────
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self._bundle.df
+
+    @property
+    def label_col(self) -> str:
+        return self._bundle.label_col
+
+    @property
+    def patient_col(self) -> str:
+        return self._bundle.patient_col
+
+    @property
+    def feature_dim(self) -> int:
+        return self._bundle.feature_dim
+
+    def vectorize_row(self, row: pd.Series) -> np.ndarray:
+        return self._bundle.vectorize_row(row)
+
+    def get_image_path(self, row: pd.Series):
+        return self._bundle.get_image_path(row)
+
+    # ── Shell building ───────────────────────────────────────────────────────
+
+    def build_shells(
+        self,
+        df: pd.DataFrame,
+        *,
+        level: str = "eye",
+        label_filter: list[int] | None = None,
+    ) -> LoaderShell:
+        """Build a LoaderShell from a split DataFrame.
+
+        level="eye"     — one ShellEntry per eye row.
+                          entity_id = (patient_id, side_key)
+                          e.g. (42, "OD") or (42, "OS")
+
+        level="patient" — one ShellEntry per patient.
+                          entity_id = (patient_id,)  — 1-tuple
+                          Towers that need both sides use data_view.side_map
+                          to assemble them in get_sample.
+                          Patients missing either eye are excluded.
+        """
+        pc = self.patient_col
+        lc = self.label_col
+
+        if label_filter is not None:
+            df = df[df[lc].isin(label_filter)]
+
+        entries: list[ShellEntry] = []
+
+        if level == "eye":
+            for _, row in df.iterrows():
+                pid   = int(row[pc])
+                label = int(row[lc])
+                side  = str(row.get("eyeID", "OD"))
+                entries.append(ShellEntry(entity_id=(pid, side), label=label))
+
+        elif level == "patient":
+            for pid, grp in df.groupby(pc):
+                if "eyeID" in grp.columns:
+                    eyes = set(grp["eyeID"].unique())
+                    if "OD" not in eyes or "OS" not in eyes:
+                        continue
+                label_mode = grp[lc].mode()
+                label = int(label_mode.iloc[0]) if not label_mode.empty else int(grp[lc].iloc[0])
+                entries.append(ShellEntry(entity_id=(int(pid),), label=label))
+
+        else:
+            raise ValueError(f"Unknown shell level: {level!r}. Choose 'eye' or 'patient'.")
+
+        return LoaderShell(entries=entries)
+
+
+# ---------------------------------------------------------------------------
+# Resolve helper — used by the orchestrator to inject DataView into towers
+# ---------------------------------------------------------------------------
+
+def resolve_data_source(bundle: PapilaBundle, path: str):
+    """Resolve a dot-path data source string against a PapilaBundle.
+
+    Examples
+    --------
+    "matrix"     → bundle.matrix
+    "matrix.od"  → bundle.matrix.od
+    "image"      → bundle.image
+    "image.os"   → bundle.image.os
+    """
+    obj = bundle
+    for part in path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Public contract: build_data(args: dict) -> PapilaBundle
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CAT_COLS = ["Gender", "Phakic/Pseudophakic"]
+
+
+def build_data(args: dict) -> PapilaBundle:
+    """Build and return a PapilaBundle.
+
+    args keys
+    ---------
+    image_dir        (required)
+    clinical_dir     (required)
+    label_col        (default: "Diagnosis")
+    iop_corr_method  (default: "ratio")
+    iop_drop_raw     (default: False)
+    exclude_cols     (default: [])
+    cat_cols         (default: ["Gender", "Phakic/Pseudophakic"])
+    n_splits         (default: 5)
+    random_seed      (default: 42)
+    in_memory_cache  (default: False) — enable shared image cache for the run
+    """
+    image_dir      = args["image_dir"]
+    clinical_dir   = args["clinical_dir"]
+    label_col      = args.get("label_col",       "Diagnosis")
+    iop_method     = args.get("iop_corr_method", "ratio")
+    iop_drop_raw   = bool(args.get("iop_drop_raw", False))
+    exclude_cols   = list(args.get("exclude_cols", []))
+    cat_cols       = list(args.get("cat_cols",    _DEFAULT_CAT_COLS))
+    n_splits       = int(args.get("n_splits",     5))
+    random_seed    = int(args.get("random_seed",  42))
+    use_cache      = bool(args.get("in_memory_cache", False))
+
+    effective_cat = [c for c in cat_cols if c not in exclude_cols]
+
+    bundle = DataBundle(
+        image_dir=image_dir,
+        clinical_dir=clinical_dir,
+        label_col=label_col,
+        patient_col="Patient ID",
+        cat_cols=effective_cat,
+        n_splits=n_splits,
+        random_seed=random_seed,
+        filename_template="RET{pid:03d}{eye}.jpg",
+    )
+
+    od  = pd.read_excel(f"{clinical_dir}/patient_data_od.xlsx", header=1)
+    od["eyeID"] = "OD"
+    os_ = pd.read_excel(f"{clinical_dir}/patient_data_os.xlsx", header=1)
+    os_["eyeID"] = "OS"
+
+    for frame in (od, os_):
+        if "Patient ID" not in frame.columns and "ID" in frame.columns:
+            frame.rename(columns={"ID": "Patient ID"}, inplace=True)
+        frame["Patient ID"] = (
+            frame["Patient ID"].astype(str).str.extract(r"(\d+)")[0].astype(int)
+        )
+        _canonicalize_eye_column(frame)
+
+    bundle.add_df(od,  id_column="ID", exclude_cols=exclude_cols or None)
+    bundle.add_df(os_, id_column="ID", exclude_cols=exclude_cols or None)
+
+    converter = _fit_perkins_converter(bundle.frames, method=iop_method)
+    for i in range(len(bundle.frames)):
+        bundle.frames[i] = _apply_iop_and_drop_md(
+            bundle.frames[i], converter=converter, drop_raw=iop_drop_raw
+        )
+
+    bundle._refresh_master_df(exclude_cols=exclude_cols or None)
+    bundle._infer_or_validate_feature_types(exclude_cols=exclude_cols or None)
+    bundle._compute_numeric_stats()
+    bundle._build_cat_maps()
+    bundle._compute_feature_dim()
+
+    image_cache = CachedImageLoader() if use_cache else None
+
+    return PapilaBundle(
+        bundle=bundle,
+        image_dir=image_dir,
+        image_cache=image_cache,
+    )

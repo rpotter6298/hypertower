@@ -61,7 +61,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 
-from v3.classes.seg_cnn import (
+from v3.classes.geometry_towers import (
     SegCNN, SegMapDataset, SegMapRecord,
     UNetFineTuneDataset, precompute_unet_seg_maps,
 )

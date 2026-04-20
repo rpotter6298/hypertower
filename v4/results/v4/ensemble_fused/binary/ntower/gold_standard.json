@@ -1,0 +1,146 @@
+{
+  "run_name": "v4/ensemble_fused",
+  "config": {
+    "_notes": [
+      "V4 ensemble_fused: img + cd towers, HTFusion Stage 1, HyperBridge Stage 2.",
+      "Matches phase5/embedding_mlp_head setup for direct comparison.",
+      "data_source resolves against the PapilaBundle returned by build_data.",
+      "image_dir / clinical_dir are project-relative; orchestrator resolves against REPO_ROOT."
+    ],
+    "run_name": "v4/ensemble_fused",
+    "eval_mode": "binary",
+    "split_identity_level": 1,
+    "epochs": 30,
+    "fusion_epochs": 10,
+    "folds": 5,
+    "fold_seed": 100,
+    "seed": 1234,
+    "output_root": "v4/results",
+    "data": {
+      "module": "v4.classes.profiles.v4papila",
+      "args": {
+        "image_dir": "Papila/FundusImages",
+        "clinical_dir": "Papila/ClinicalData",
+        "label_col": "Diagnosis",
+        "iop_corr_method": "ratio",
+        "iop_drop_raw": true,
+        "exclude_cols": [
+          "Axial_Length"
+        ],
+        "in_memory_cache": true
+      }
+    },
+    "towers": [
+      {
+        "name": "img",
+        "module": "v4.classes.towers.image_tower",
+        "class": "ImageEncoder",
+        "data_source": "image",
+        "args": {
+          "backbone": "refugelike",
+          "freeze_ratio": 0.0,
+          "augment": true
+        },
+        "warmup_epochs": 0
+      },
+      {
+        "name": "cd",
+        "module": "v4.classes.towers.clinical_tower",
+        "class": "ClinicalEncoder",
+        "data_source": "matrix",
+        "args": {
+          "hidden_dim": 128
+        },
+        "warmup_epochs": 40,
+        "warmup_exclude_towers": [
+          "img"
+        ]
+      }
+    ],
+    "bridge": {
+      "mode": "embedding_mlp",
+      "fusion_dim": 256,
+      "hidden_dim": 256
+    },
+    "training": {
+      "lr": 0.0001,
+      "batch_size": 16,
+      "bcd_prob": 0.5,
+      "warmup_tower_epochs": 3,
+      "warmup_fused_epochs": 3,
+      "tune_binary_threshold": true
+    }
+  },
+  "mean_val_auc": 0.9036764705882353,
+  "std_val_auc": 0.02318218054475656,
+  "mean_test_auc": 0.9007352941176471,
+  "std_test_auc": 0.04178903599524356,
+  "elapsed_s": 1563.1,
+  "fold_results": [
+    {
+      "fold": 0,
+      "val_auc": 0.9044117647058824,
+      "val_acc": 0.8571428571428571,
+      "val_n": 42,
+      "val_kappa": 0.42727272727272725,
+      "val_mcc": 0.4622975667767223,
+      "val_f1": 0.7083333333333333,
+      "val_threshold": 0.1659889668226242,
+      "test_auc": 0.8566176470588236,
+      "test_acc": 0.9285714285714286,
+      "test_n": 42
+    },
+    {
+      "fold": 1,
+      "val_auc": 0.8970588235294118,
+      "val_acc": 0.8809523809523809,
+      "val_n": 42,
+      "val_kappa": 0.5945945945945946,
+      "val_mcc": 0.5965587590013045,
+      "val_f1": 0.7971014492753623,
+      "val_threshold": 0.017083797603845596,
+      "test_auc": 0.9044117647058824,
+      "test_acc": 0.8095238095238095,
+      "test_n": 42
+    },
+    {
+      "fold": 2,
+      "val_auc": 0.863970588235294,
+      "val_acc": 0.8333333333333334,
+      "val_n": 42,
+      "val_kappa": 0.43243243243243246,
+      "val_mcc": 0.4338609156373123,
+      "val_f1": 0.7159420289855072,
+      "val_threshold": 0.09843172132968903,
+      "test_auc": 0.9044117647058824,
+      "test_acc": 0.8571428571428571,
+      "test_n": 42
+    },
+    {
+      "fold": 3,
+      "val_auc": 0.9227941176470588,
+      "val_acc": 0.8809523809523809,
+      "val_n": 42,
+      "val_kappa": 0.631578947368421,
+      "val_mcc": 0.6333004963811236,
+      "val_f1": 0.8156277436347674,
+      "val_threshold": 0.01531070377677679,
+      "test_auc": 0.8639705882352942,
+      "test_acc": 0.8571428571428571,
+      "test_n": 42
+    },
+    {
+      "fold": 4,
+      "val_auc": 0.9301470588235294,
+      "val_acc": 0.9047619047619048,
+      "val_n": 42,
+      "val_kappa": 0.6181818181818182,
+      "val_mcc": 0.6688560540599386,
+      "val_f1": 0.8055555555555556,
+      "val_threshold": 0.19587548077106476,
+      "test_auc": 0.9742647058823529,
+      "test_acc": 0.9285714285714286,
+      "test_n": 42
+    }
+  ]
+}

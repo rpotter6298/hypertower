@@ -239,7 +239,7 @@ def make_disc_attention_detail(
 def build_model(ckpt_path: Path, device: torch.device):
     """Reconstruct SingleEyeHT from checkpoint and load weights."""
     from types import SimpleNamespace
-    from v3.classes.models import SingleEyeHT
+    from v3.classes.hypertower_models import SingleEyeHT
     sd = torch.load(ckpt_path, map_location="cpu")
     # ClinicalTower only reads clinical_data.feature_dim at init time
     cd_in = sd["cd_tower.block0.0.weight"].shape[1]

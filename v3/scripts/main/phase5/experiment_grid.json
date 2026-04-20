@@ -36,7 +36,7 @@
   "baseline": {
     "run_name": "phase5/single_fused",
     "description": "Single-eye + clinical data — phase 3 best config, re-run as direct comparison baseline for phase 5.",
-    "extra_args": ["--tower-mode", "single"]
+    "extra_args": ["--hypertower-mode", "single"]
   },
 
   "groups": [
@@ -47,17 +47,17 @@
         {
           "run_name": "phase5/ensemble_fused",
           "description": "Ensemble (independent OD+OS) + clinical data via fused bridge.",
-          "extra_args": ["--tower-mode", "ensemble"]
+          "extra_args": ["--hypertower-mode", "ensemble"]
         },
         {
           "run_name": "phase5/bilateral_fused",
           "description": "BilateralHT + clinical data — full canonical HyperTower.",
-          "extra_args": ["--tower-mode", "bilateral"]
+          "extra_args": ["--hypertower-mode", "bilateral"]
         },
         {
           "run_name": "phase5/siamese_fused",
           "description": "SiameseHT + clinical data — siamese mean+delta with fused clinical bridge.",
-          "extra_args": ["--tower-mode", "siamese"]
+          "extra_args": ["--hypertower-mode", "siamese"]
         }
       ]
     },
@@ -69,17 +69,17 @@
         {
           "run_name": "phase5/ensemble_fused_head",
           "description": "Ensemble + clinical data + attention scorer head (Linear(C→1) per eye, softmax-weighted average).",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head"]
         },
         {
           "run_name": "phase5/logit_mlp_head",
           "description": "Ensemble + clinical data + logit-level MLP head (cat([logit_od, logit_os]) → FC(64) → FC(C)).",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--head-type", "logit_mlp"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--head-type", "logit_mlp"]
         },
         {
           "run_name": "phase5/embedding_mlp_head",
           "description": "Ensemble + clinical data + embedding-level MLP head (cat([z_od, z_os]) → FC(256) → FC(C)).",
-          "extra_args": ["--tower-mode", "ensemble", "--fused-head", "--head-type", "embedding_mlp"]
+          "extra_args": ["--hypertower-mode", "ensemble", "--fused-head", "--head-type", "embedding_mlp"]
         }
       ]
     }

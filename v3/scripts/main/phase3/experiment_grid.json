@@ -12,7 +12,7 @@
   "common_args": [
     "--eval-mode",
     "binary",
-    "--tower-mode",
+    "--hypertower-mode",
     "single",
     "--epochs",
     "30",

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import torch
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader, Sampler, WeightedRandomSampler
 
 from .network_manager import LoaderBundle, PatientSplit
 from .slot_dataset import SlotDataset, slot_collate
@@ -210,7 +210,7 @@ def make_loader(
     batch_size: int,
     shuffle: bool,
     num_workers: int,
-    sampler: Optional[WeightedRandomSampler] = None,
+    sampler: Optional[Sampler] = None,
     persistent_workers: bool = False,
 ) -> DataLoader:
     ds = SlotDataset(

@@ -9,7 +9,7 @@ Usage (single fold-seed, 5-fold, binary, ensemble):
   python -m v3.scripts.main.run_cv \
       --run-name my_run \
       --eval-mode binary \
-      --tower-mode ensemble \
+      --hypertower-mode ensemble \
       --epochs 40 \
       --augment \
       --tune-binary-threshold \
@@ -22,7 +22,7 @@ Usage (10x5 rep-CV, seeds 100..1000):
       --rep-seed-start 100 \
       --rep-seed-step 100 \
       --eval-mode binary \
-      --tower-mode ensemble \
+      --hypertower-mode ensemble \
       --epochs 40 \
       --augment \
       --tune-binary-threshold \

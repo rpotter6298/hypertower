@@ -44,7 +44,7 @@ SEED = 0
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 def build_model(ckpt_path: Path, device: torch.device):
-    from v3.classes.models import SingleEyeHT
+    from v3.classes.hypertower_models import SingleEyeHT
     sd = torch.load(ckpt_path, map_location="cpu")
     cd_in = sd["cd_tower.block0.0.weight"].shape[1]
     model = SingleEyeHT(
@@ -169,7 +169,7 @@ def run_fold(rep_idx: int, fold_idx: int, model, data, device: torch.device,
     # Baseline AUC
     with torch.no_grad():
         md_feats = model.cd_tower(meta_all.to(device))
-        out_f, _, _ = model.bridge(img_feats, md_feats)
+        out_f, _ = model.bridge.fuse([img_feats, md_feats])
         probs_base = F.softmax(out_f, dim=1)[:, 1].cpu().numpy()
     baseline_auc = roc_auc_score(y_true, probs_base)
     print(f"  fold{fold_idx}: baseline AUC={baseline_auc:.4f}  N={len(y_true)}")
@@ -186,7 +186,7 @@ def run_fold(rep_idx: int, fold_idx: int, model, data, device: torch.device,
             meta_perm[:, dims] = meta_perm[perm_idx][:, dims]
             with torch.no_grad():
                 md_p = model.cd_tower(meta_perm.to(device))
-                out_p, _, _ = model.bridge(img_feats, md_p)
+                out_p, _ = model.bridge.fuse([img_feats, md_p])
                 probs_p = F.softmax(out_p, dim=1)[:, 1].cpu().numpy()
             try:
                 drops.append(baseline_auc - roc_auc_score(y_true, probs_p))

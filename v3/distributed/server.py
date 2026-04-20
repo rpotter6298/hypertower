@@ -10,6 +10,7 @@ Usage:
 Environment:
     HT_TOKEN  — fallback if --token is not passed
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,8 +45,8 @@ from .protocol import (
 
 _TOKEN: str = ""
 _DB_PATH: Path = Path("v3/distributed/jobs.db")
-_CLIENT_TTL: int = 120   # seconds before a client is considered gone
-_MAX_ATTEMPTS: int = 3   # max times a job is retried before being left as failed
+_CLIENT_TTL: int = 120  # seconds before a client is considered gone
+_MAX_ATTEMPTS: int = 3  # max times a job is retried before being left as failed
 
 _clients: dict[str, ClientInfo] = {}
 _clients_lock = threading.Lock()
@@ -60,11 +61,15 @@ def _reap_stale_clients():
         # Step 1: evict timed-out clients from registry
         with _clients_lock:
             stale = [
-                cid for cid, c in _clients.items()
+                cid
+                for cid, c in _clients.items()
                 if datetime.fromisoformat(c.last_seen).timestamp() < cutoff
             ]
             for cid in stale:
-                print(f"[server] reaped stale client {cid} ({_clients[cid].hostname})", flush=True)
+                print(
+                    f"[server] reaped stale client {cid} ({_clients[cid].hostname})",
+                    flush=True,
+                )
                 del _clients[cid]
             known_ids = set(_clients.keys())
 
@@ -78,14 +83,19 @@ def _reap_stale_clients():
                     conn.execute(
                         "UPDATE jobs SET state='pending', assigned_to=NULL, started_at=NULL "
                         "WHERE job_id=?",
-                        (row["job_id"],)
+                        (row["job_id"],),
                     )
-                    print(f"[server] re-queued job {row['job_id']} "
-                          f"(client {row['assigned_to']} unknown)", flush=True)
+                    print(
+                        f"[server] re-queued job {row['job_id']} "
+                        f"(client {row['assigned_to']} unknown)",
+                        flush=True,
+                    )
+
 
 # ──────────────────────────────────────────────────────────────
 # Database helpers
 # ──────────────────────────────────────────────────────────────
+
 
 @contextmanager
 def _db():
@@ -101,7 +111,8 @@ def _db():
 def _init_db():
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _db() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id       TEXT PRIMARY KEY,
                 run_name     TEXT NOT NULL,
@@ -117,10 +128,16 @@ def _init_db():
                 error_msg    TEXT,
                 attempts     INTEGER NOT NULL DEFAULT 0
             )
-        """)
+        """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_run_name ON jobs(run_name)")
         # Add attempts column to existing DBs that predate this field
         try:
-            conn.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+            )
         except Exception:
             pass  # column already exists
         # Note: running jobs are NOT reset on startup — active clients will re-register
@@ -147,6 +164,7 @@ def _ensure_client(client_id: str, hostname: str = "", gpu_info: str = "") -> bo
         return True
     return False
 
+
 # ──────────────────────────────────────────────────────────────
 # FastAPI app
 # ──────────────────────────────────────────────────────────────
@@ -161,12 +179,20 @@ def _check_token(x_token: str = Header(...)):
 
 # ── Registration ──────────────────────────────────────────────
 
-@app.post("/register", response_model=RegisterResponse,
-          dependencies=[Depends(_check_token)])
+
+@app.post(
+    "/register", response_model=RegisterResponse, dependencies=[Depends(_check_token)]
+)
 def register(req: RegisterRequest, reuse_id: Optional[str] = None):
     with _clients_lock:
-        client_id = reuse_id if (reuse_id and reuse_id in _clients) else str(uuid.uuid4())[:8]
-        existing_status = _clients[client_id].status if client_id in _clients else StatusPush(state="idle")
+        client_id = (
+            reuse_id if (reuse_id and reuse_id in _clients) else str(uuid.uuid4())[:8]
+        )
+        existing_status = (
+            _clients[client_id].status
+            if client_id in _clients
+            else StatusPush(state="idle")
+        )
         _clients[client_id] = ClientInfo(
             client_id=client_id,
             hostname=req.hostname,
@@ -175,14 +201,16 @@ def register(req: RegisterRequest, reuse_id: Optional[str] = None):
             last_seen=_now(),
         )
     action = "re-registered" if reuse_id else "registered"
-    print(f"[server] {action} {client_id} ({req.hostname} | {req.gpu_info})", flush=True)
+    print(
+        f"[server] {action} {client_id} ({req.hostname} | {req.gpu_info})", flush=True
+    )
     return RegisterResponse(client_id=client_id)
 
 
 # ── Job polling ───────────────────────────────────────────────
 
-@app.post("/poll", response_model=PollResponse,
-          dependencies=[Depends(_check_token)])
+
+@app.post("/poll", response_model=PollResponse, dependencies=[Depends(_check_token)])
 def poll(client_id: str):
     with _clients_lock:
         needs_reregister = _ensure_client(client_id)
@@ -206,7 +234,10 @@ def poll(client_id: str):
             (client_id, job_id),
         )
         if cur.rowcount:
-            print(f"[server] reset {cur.rowcount} orphaned running job(s) for {client_id}", flush=True)
+            print(
+                f"[server] reset {cur.rowcount} orphaned running job(s) for {client_id}",
+                flush=True,
+            )
         conn.execute(
             "UPDATE jobs SET state='running', assigned_to=?, started_at=? WHERE job_id=?",
             (client_id, _now(), job_id),
@@ -230,6 +261,7 @@ def poll(client_id: str):
 
 
 # ── Status ────────────────────────────────────────────────────
+
 
 @app.post("/status/{client_id}", dependencies=[Depends(_check_token)])
 def push_status(client_id: str, status: StatusPush):
@@ -256,6 +288,7 @@ def get_client(client_id: str):
 
 # ── Job completion ────────────────────────────────────────────
 
+
 @app.post("/complete", dependencies=[Depends(_check_token)])
 def complete(result: JobResult):
     with _db() as conn:
@@ -274,14 +307,17 @@ def complete(result: JobResult):
                 run_name = run_row["run_name"]
                 remaining = conn.execute(
                     "SELECT COUNT(*) FROM jobs WHERE run_name=? AND state != 'done'",
-                    (run_name,)
+                    (run_name,),
                 ).fetchone()[0]
                 if remaining == 0:
                     total = conn.execute(
                         "SELECT COUNT(*) FROM jobs WHERE run_name=?", (run_name,)
                     ).fetchone()[0]
                     conn.execute("DELETE FROM jobs WHERE run_name=?", (run_name,))
-                    print(f"[server] run '{run_name}' complete ({total} jobs) — cleared", flush=True)
+                    print(
+                        f"[server] run '{run_name}' complete ({total} jobs) — cleared",
+                        flush=True,
+                    )
         else:
             row = conn.execute(
                 "SELECT attempts FROM jobs WHERE job_id=?", (result.job_id,)
@@ -293,20 +329,27 @@ def complete(result: JobResult):
                     "attempts=?, error_msg=? WHERE job_id=?",
                     (attempts, result.error_msg, result.job_id),
                 )
-                print(f"[server] job {result.job_id} failed (attempt {attempts}/{_MAX_ATTEMPTS}), "
-                      f"re-queuing", flush=True)
+                print(
+                    f"[server] job {result.job_id} failed (attempt {attempts}/{_MAX_ATTEMPTS}), "
+                    f"re-queuing",
+                    flush=True,
+                )
             else:
                 conn.execute(
                     "UPDATE jobs SET state='failed', completed_at=?, attempts=?, error_msg=? "
                     "WHERE job_id=?",
                     (_now(), attempts, result.error_msg, result.job_id),
                 )
-                print(f"[server] job {result.job_id} failed permanently after "
-                      f"{attempts} attempts", flush=True)
+                print(
+                    f"[server] job {result.job_id} failed permanently after "
+                    f"{attempts} attempts",
+                    flush=True,
+                )
     return {"ok": True}
 
 
 # ── Job queue management ──────────────────────────────────────
+
 
 @app.post("/jobs", dependencies=[Depends(_check_token)])
 def submit_job(job: JobSubmit):
@@ -316,8 +359,15 @@ def submit_job(job: JobSubmit):
             "INSERT INTO jobs "
             "(job_id, run_name, module, args, output_dir, priority, created_at) "
             "VALUES (?,?,?,?,?,?,?)",
-            (job_id, job.run_name, job.module, json.dumps(job.args),
-             job.output_dir, job.priority, _now()),
+            (
+                job_id,
+                job.run_name,
+                job.module,
+                json.dumps(job.args),
+                job.output_dir,
+                job.priority,
+                _now(),
+            ),
         )
     print(f"[server] queued {job_id} ({job.run_name})", flush=True)
     return {"job_id": job_id}
@@ -347,7 +397,9 @@ def clear_jobs(body: dict):
         else:
             states = body.get("states", ["done", "failed", "cancelled"])
             placeholders = ",".join("?" * len(states))
-            cur = conn.execute(f"DELETE FROM jobs WHERE state IN ({placeholders})", states)
+            cur = conn.execute(
+                f"DELETE FROM jobs WHERE state IN ({placeholders})", states
+            )
     print(f"[server] cleared {cur.rowcount} jobs", flush=True)
     return {"cleared": cur.rowcount}
 
@@ -366,19 +418,33 @@ def cancel_job(job_id: str):
 # Entry point
 # ──────────────────────────────────────────────────────────────
 
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--token", default=os.environ.get("HT_TOKEN", ""),
-                    help="Shared secret (or set HT_TOKEN env var)")
-    ap.add_argument("--db", default="v3/distributed/jobs.db",
-                    help="Path to SQLite job database")
-    ap.add_argument("--client-ttl", type=int, default=120,
-                    help="Seconds of silence before a client is reaped (default: 120)")
-    ap.add_argument("--max-attempts", type=int, default=3,
-                    help="Max times a failed job is retried before being left as failed (default: 3)")
+    ap.add_argument(
+        "--token",
+        default=os.environ.get("HT_TOKEN", ""),
+        help="Shared secret (or set HT_TOKEN env var)",
+    )
+    ap.add_argument(
+        "--db", default="v3/distributed/jobs.db", help="Path to SQLite job database"
+    )
+    ap.add_argument(
+        "--client-ttl",
+        type=int,
+        default=120,
+        help="Seconds of silence before a client is reaped (default: 120)",
+    )
+    ap.add_argument(
+        "--max-attempts",
+        type=int,
+        default=3,
+        help="Max times a failed job is retried before being left as failed (default: 3)",
+    )
     args = ap.parse_args()
 
     if not args.token:
@@ -394,7 +460,10 @@ def main():
     reaper = threading.Thread(target=_reap_stale_clients, daemon=True)
     reaper.start()
 
-    print(f"[server] listening on {args.host}:{args.port}  client_ttl={_CLIENT_TTL}s", flush=True)
+    print(
+        f"[server] listening on {args.host}:{args.port}  client_ttl={_CLIENT_TTL}s",
+        flush=True,
+    )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

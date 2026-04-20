@@ -1,0 +1,121 @@
+{
+  "_notes": [
+    "V4 stage-pipeline: warm → fusion stages with parallel head stages.",
+    "Bridges are pure embedding producers; heads are separate swappable stages.",
+    "BCD-eligible heads are sampled during tower_warmup and main phases.",
+    "eval_stage names the fusion stage whose primary head is used for final metrics."
+  ],
+
+  "run_name":            "v4/ensemble_fused",
+  "num_classes":         2,
+  "label_filter":        [0, 1],
+  "split_identity_level": 1,
+  "eval_stage":          "hb",
+  "save_predictions":    false,
+  "seed":                1234,
+  "folds":               5,
+  "fold_seed":           100,
+  "output_root":         "v4/results",
+  "out_dir_tags":        ["binary", "ntower"],
+
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir":        "Papila/FundusImages",
+      "clinical_dir":     "Papila/ClinicalData",
+      "label_col":        "Diagnosis",
+      "iop_corr_method":  "ratio",
+      "iop_drop_raw":     true,
+      "exclude_cols":     ["Axial_Length"],
+      "in_memory_cache":  true
+    }
+  },
+
+  "towers": [
+    {
+      "name":        "img",
+      "module":      "v4.classes.towers.image_tower",
+      "class":       "ImageEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone":     "refugelike",
+        "freeze_ratio": 0.0,
+        "augment":      true
+      }
+    },
+    {
+      "name":        "cd",
+      "module":      "v4.classes.towers.clinical_tower",
+      "class":       "ClinicalEncoder",
+      "data_source": "matrix",
+      "args": {
+        "hidden_dim": 128
+      }
+    }
+  ],
+
+  "stages": [
+    {
+      "name":    "cd_warm",
+      "type":    "warm",
+      "tower":   "cd",
+      "level":   "eye",
+      "epochs":  40
+    },
+    {
+      "name":       "img_aux",
+      "type":       "head",
+      "input":      "img",
+      "train_with": "nt",
+      "bcd":        true
+    },
+    {
+      "name":       "cd_aux",
+      "type":       "head",
+      "input":      "cd",
+      "train_with": "nt",
+      "bcd":        true
+    },
+    {
+      "name":         "nt",
+      "type":         "fusion",
+      "module":       "v4.classes.bridges.fusion_bridge",
+      "class":        "FusionBridge",
+      "inputs":       ["img", "cd"],
+      "level":        "eye",
+      "epochs":       36,
+      "train_towers": true,
+      "warmup":       { "tower_epochs": 3, "fused_epochs": 3 },
+      "args":         { "fusion_dim": 256 }
+    },
+    {
+      "name":       "nt_head",
+      "type":       "head",
+      "input":      "nt",
+      "train_with": "nt"
+    },
+    {
+      "name":    "hb",
+      "type":    "fusion",
+      "module":  "v4.classes.bridges.hyperbridge",
+      "class":   "HyperBridge",
+      "inputs":  { "a": "nt", "b": "nt" },
+      "level":   "patient",
+      "epochs":  10,
+      "args":    { "hidden_dim": 256, "mode": "embedding_mlp" }
+    },
+    {
+      "name":       "hb_head",
+      "type":       "head",
+      "input":      "hb",
+      "train_with": "hb"
+    }
+  ],
+
+  "training": {
+    "lr":                    1e-4,
+    "batch_size":            16,
+    "bcd_prob":              0.5,
+    "tune_binary_threshold": true
+  }
+}

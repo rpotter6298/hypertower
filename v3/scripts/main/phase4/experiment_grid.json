@@ -31,7 +31,7 @@
   "baseline": {
     "run_name": "phase4/single",
     "description": "Single-eye baseline with best phase 3 image settings. Direct comparison point for bilateral modes.",
-    "extra_args": ["--tower-mode", "single"]
+    "extra_args": ["--hypertower-mode", "single"]
   },
 
   "groups": [
@@ -42,17 +42,17 @@
         {
           "run_name": "phase4/ensemble",
           "description": "Ensemble: two independent single-eye forward passes, patient-level average of OD+OS scores.",
-          "extra_args": ["--tower-mode", "ensemble"]
+          "extra_args": ["--hypertower-mode", "ensemble"]
         },
         {
           "run_name": "phase4/bilateral",
           "description": "BilateralHT: shared towers, concat OD+OS → learned joint projection MLP → classifier.",
-          "extra_args": ["--tower-mode", "bilateral"]
+          "extra_args": ["--hypertower-mode", "bilateral"]
         },
         {
           "run_name": "phase4/siamese",
           "description": "SiameseHT: shared backbone, mean+delta (asymmetry) representation → classifier.",
-          "extra_args": ["--tower-mode", "siamese"]
+          "extra_args": ["--hypertower-mode", "siamese"]
         }
       ]
     },
@@ -64,12 +64,12 @@
         {
           "run_name": "phase4/bilateral_loss_all",
           "description": "BilateralHT with all-losses mode — joint training dynamics may differ from single-eye.",
-          "extra_args": ["--tower-mode", "bilateral", "--tower-loss-mode", "all"]
+          "extra_args": ["--hypertower-mode", "bilateral", "--tower-loss-mode", "all"]
         },
         {
           "run_name": "phase4/siamese_loss_all",
           "description": "SiameseHT with all-losses mode.",
-          "extra_args": ["--tower-mode", "siamese", "--tower-loss-mode", "all"]
+          "extra_args": ["--hypertower-mode", "siamese", "--tower-loss-mode", "all"]
         }
       ]
     }
