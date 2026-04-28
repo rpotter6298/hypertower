@@ -467,6 +467,10 @@ class V3HyperTower:
                 np.save(fold_dir / "test_probs_img.npy", artifacts.probs_test_img)
             if artifacts.probs_test_md is not None:
                 np.save(fold_dir / "test_probs_cd.npy", artifacts.probs_test_md)
+            if artifacts.y_true_fused_test is not None:
+                np.save(fold_dir / "test_y_true_fused.npy", artifacts.y_true_fused_test)
+            if artifacts.probs_fused_test is not None:
+                np.save(fold_dir / "test_probs_fused_head.npy", artifacts.probs_fused_test)
 
         if pred_store is not None:
             pred_store.save(tm_dir / "predictions.npz")
@@ -489,14 +493,17 @@ class V3HyperTower:
         if tower_mode in ("single", "classic"):
             _test_key = "classic_test"
         elif tower_mode == "ensemble":
-            _test_key = "ensemble_test"
+            _test_key = "fused_test" if fused_head else "ensemble_test"
         elif tower_mode in ("bilateral", "siamese"):
             _test_key = "bilat_test"
         else:
             _test_key = "classic_test"
+        mode_summary = {_test_key: summary.get(_test_key, {})}
+        if fused_head and tower_mode == "ensemble":
+            mode_summary["ensemble_test"] = summary.get("ensemble_test", {})
+            mode_summary["fused_best_val"] = summary.get("fused_best_val", {})
         with (tm_dir / "summary.json").open("w") as f:
-            json.dump({"mode_summary": {_test_key: summary.get(_test_key, {})}},
-                      f, indent=2, default=str)
+            json.dump({"mode_summary": mode_summary}, f, indent=2, default=str)
 
         return out_dir
 
@@ -1524,10 +1531,17 @@ class V3HyperTower:
         y_fu_best = p_fu_best = None
         if run_fused and single is not None:
             y_fu_best, p_fu_best = collect_probs_fused(fused, val_loader, device)
+            if y_fu_best is not None and y_fu_best.size:
+                fu_acc_best = float((p_fu_best.argmax(1) == y_fu_best).mean())
+                snap_fused, _, _, _ = _tune_and_snap(
+                    y_fu_best, p_fu_best, fu_acc_best, num_classes, args, args.ece_bins
+                )
 
         # Test set evaluation (once, never seen during training)
         snap_test: dict = {}
+        snap_fused_test: dict = {}
         y_test_out = p_test_out = p_test_img_out = p_test_md_out = None
+        y_fused_test_out = p_fused_test_out = None
 
         if test_loader is not None:
             if run_single and tower_mode == "ensemble":
@@ -1564,6 +1578,33 @@ class V3HyperTower:
                     {"fused": p_test_out, "img": p_test_img_out, "md": p_test_md_out},
                     suffix="_test",
                 )
+            if run_fused and single is not None:
+                y_fused_test_out, p_fused_test_out = collect_probs_fused(
+                    fused, test_loader, device
+                )
+                if y_fused_test_out is not None and y_fused_test_out.size:
+                    fused_test_acc_raw = float(
+                        (p_fused_test_out.argmax(1) == y_fused_test_out).mean()
+                    )
+                    snap_fused_test, _, _, _ = _tune_and_snap(
+                        y_fused_test_out, p_fused_test_out, fused_test_acc_raw,
+                        num_classes, args, args.ece_bins
+                    )
+                    print(
+                        f"  [fold {fold+1}] FUSED_HEAD TEST  "
+                        f"auc={snap_fused_test.get('auc', nan):.2f}  "
+                        f"acc={snap_fused_test.get('acc', nan):.2f}  "
+                        f"kappa={snap_fused_test.get('kappa', nan):.2f}  "
+                        f"f1={snap_fused_test.get('macro_f1', nan):.2f}  "
+                        f"ece={snap_fused_test.get('ece', nan):.2f}  "
+                        f"n={snap_fused_test.get('n', 0)}",
+                        flush=True,
+                    )
+                    _save_predictions_csv(
+                        fold_dir, mode, y_fused_test_out,
+                        {"fused_head": p_fused_test_out},
+                        suffix="_fused_head_test",
+                    )
         else:
             print(f"  [fold {fold+1}] WARNING: no test samples for this fold.", flush=True)
 
@@ -1630,7 +1671,12 @@ class V3HyperTower:
             fused_val_threshold=snap_fused.get("threshold", nan),
             fused_val_bias=_svf(snap_fused.get("bias")),
             fused_val_n=snap_fused.get("n", 0),
-            fused_test_auc=nan, fused_test_acc=nan,
+            fused_test_auc=snap_fused_test.get("auc", nan),
+            fused_test_acc=snap_fused_test.get("acc", nan),
+            fused_test_kappa=snap_fused_test.get("kappa", nan),
+            fused_test_f1=snap_fused_test.get("macro_f1", nan),
+            fused_test_ece=snap_fused_test.get("ece", nan),
+            fused_test_n=snap_fused_test.get("n", 0),
         ), FoldArtifacts(
             y_true_classic=y_cl_best,   probs_classic=p_cl_best,
             y_true_ensemble=y_en_best,  probs_ensemble=p_en_best,
@@ -1657,6 +1703,8 @@ class V3HyperTower:
             probs_test=p_test_out,
             probs_test_img=p_test_img_out,
             probs_test_md=p_test_md_out,
+            y_true_fused_test=y_fused_test_out,
+            probs_fused_test=p_fused_test_out,
         )
 
     @staticmethod
@@ -1685,6 +1733,7 @@ class V3HyperTower:
             ("ensemble_test", "ensemble_test"),
             ("classic_test",  "classic_test"),
             ("bilat_test",    "bilat_test"),
+            ("fused_test",    "fused_test"),
         ]:
             sub = {}
             for m in ["auc", "acc", "kappa", "f1", "ece"]:

@@ -1,0 +1,6 @@
+[
+  {
+    "_note": "Tritower with default params (bcd_prob=0.5, cw=false, nt_epochs=36) — 10-rep baseline.",
+    "run_name": "experiments/tri_v1/baseline_tri"
+  }
+]

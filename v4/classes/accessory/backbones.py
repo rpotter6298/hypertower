@@ -109,6 +109,12 @@ BACKBONES: Dict[str, BackboneSpec] = {
         strip=_strip_efficientnet,
         blocks=_blocks_efficientnet,
     ),
+    "resnet18": BackboneSpec(
+        ctor=models.resnet18,
+        weights_default=models.ResNet18_Weights.DEFAULT,
+        strip=_strip_resnet,
+        blocks=_blocks_resnet,
+    ),
     "resnet50": BackboneSpec(
         ctor=models.resnet50,
         weights_default=models.ResNet50_Weights.DEFAULT,

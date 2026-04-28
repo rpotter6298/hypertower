@@ -205,7 +205,7 @@ class PredictionStore:
                 grp.create_dataset("y_true",     data=buf.y_true)
                 grp.create_dataset("loss",       data=buf.loss)
                 grp.create_dataset("head_names", data=np.array(buf.head_names, dtype=object), dtype=_STR_DT)
-                grp.create_dataset("split",      data=buf.split.astype(str),                  dtype=_STR_DT)
+                grp.create_dataset("split",      data=buf.split,                              dtype=_STR_DT)
                 _write_entity_ids(grp, buf.entity_ids)
 
     @classmethod
@@ -355,7 +355,7 @@ class FeatureStore:
             for phase, buf in self._phases.items():
                 grp = f.create_group(phase)
                 grp.create_dataset("y_true", data=buf.y_true)
-                grp.create_dataset("split",  data=buf.split.astype(str), dtype=_STR_DT)
+                grp.create_dataset("split",  data=buf.split,             dtype=_STR_DT)
                 _write_entity_ids(grp, buf.entity_ids)
                 for head, (arr, _) in buf._heads.items():
                     grp.create_dataset(head, data=arr, compression="gzip", compression_opts=4)

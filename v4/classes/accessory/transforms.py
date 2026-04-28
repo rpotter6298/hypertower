@@ -44,6 +44,37 @@ class ImageTransformConfig:
         ]
         return transforms.Compose(ops)
 
+    def build_precache(self) -> transforms.Compose:
+        """Deterministic prefix: PIL → resized CHW float32 in [0, 1].
+
+        Output is suitable for caching; per-batch ``build_postcache`` finishes
+        the pipeline (augment + normalize) on tensors.
+        """
+        return transforms.Compose([
+            transforms.Resize(self.resize_size),
+            transforms.CenterCrop(self.crop_size),
+            transforms.ToTensor(),
+        ])
+
+    def build_postcache(self) -> transforms.Compose:
+        """Per-batch tail run on cached float32 [0, 1] CHW tensors.
+
+        Augmentations operate on tensors (torchvision v1 supports this for
+        Flip/Rotation/ColorJitter on tensor input).  Normalize is applied last.
+        """
+        ops = []
+        if self.augment:
+            if self.hflip:
+                ops.append(transforms.RandomHorizontalFlip())
+            if self.vflip:
+                ops.append(transforms.RandomVerticalFlip())
+            if self.rotation_deg:
+                ops.append(transforms.RandomRotation(self.rotation_deg))
+            if self.color_jitter:
+                ops.append(transforms.ColorJitter(*self.color_jitter))
+        ops.append(transforms.Normalize(mean=self.mean, std=self.std))
+        return transforms.Compose(ops)
+
 
 def backbone_transform_config(backbone_name: str, augment: bool = True) -> ImageTransformConfig:
     """Build an ImageTransformConfig using the backbone's default normalisation stats."""
@@ -64,3 +95,15 @@ def build_backbone_transform(backbone_name: str, augment: bool = True) -> transf
 def build_eval_transform(backbone_name: str) -> transforms.Compose:
     """Deterministic eval transform — no augmentation, backbone-matched normalisation."""
     return build_backbone_transform(backbone_name, augment=False)
+
+
+def build_split_transforms(
+    backbone_name: str, augment: bool = True
+) -> tuple[transforms.Compose, transforms.Compose]:
+    """Return (precache, postcache) transform pair for tensor-cached image towers.
+
+    precache  : PIL → CHW float32 in [0, 1]   (deterministic, run once at fill)
+    postcache : tensor → augmented + normalized tensor   (run per batch)
+    """
+    cfg = backbone_transform_config(backbone_name, augment=augment)
+    return cfg.build_precache(), cfg.build_postcache()

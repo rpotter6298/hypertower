@@ -418,6 +418,30 @@ class ImageDataView:
             eye_filter=eye,
         )
 
+    # ── Geometry hook ─────────────────────────────────────────────────────────
+
+    def _resolve_paths(self, kwargs: dict) -> dict:
+        """Resolve any *_dir / *_path kwargs against the repo root."""
+        repo_root = Path(__file__).resolve().parents[3]
+        out = {}
+        for k, v in kwargs.items():
+            if (k.endswith("_dir") or k.endswith("_path")) and v is not None:
+                p = Path(v)
+                out[k] = str(repo_root / p) if not p.is_absolute() else v
+            else:
+                out[k] = v
+        return out
+
+    def build_geometry_loader(self, source: str, **kwargs):
+        """Return a geometry-vector loader (delegates to fundus_images)."""
+        from v4.classes.profiles.fundus_images import build_geometry_loader as _build
+        return _build(source, **self._resolve_paths(kwargs))
+
+    def build_seg_map_loader(self, source: str, **kwargs):
+        """Return a seg-map loader (delegates to fundus_images)."""
+        from v4.classes.profiles.fundus_images import build_seg_map_loader as _build
+        return _build(source, **self._resolve_paths(kwargs))
+
 
 # ---------------------------------------------------------------------------
 # PapilaBundle — the v4 DataBundle returned by build_data
@@ -515,6 +539,7 @@ class PapilaBundle:
         *,
         level: str = "eye",
         label_filter: list[int] | None = None,
+        eye_filter: str | None = None,
     ) -> LoaderShell:
         """Build a LoaderShell from a split DataFrame.
 
@@ -533,6 +558,8 @@ class PapilaBundle:
 
         if label_filter is not None:
             df = df[df[lc].isin(label_filter)]
+        if eye_filter is not None and "eyeID" in df.columns:
+            df = df[df["eyeID"] == eye_filter]
 
         entries: list[ShellEntry] = []
 

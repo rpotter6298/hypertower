@@ -29,7 +29,8 @@ sys.path.insert(0, str(REPO_ROOT))
 from v4.classes.dataset import LoaderShell, HTDataset, ht_collate
 from v4.classes.utils import seed_everything, choose_device
 from v4.classes.split_manager import SplitManager
-from v4.classes.stages import warm, fusion
+from v4.classes.stages import warm, fusion, parallel
+from v4.classes.logging.prediction_store import PredictionStore, FeatureStore
 
 
 # ---------------------------------------------------------------------------
@@ -167,28 +168,49 @@ def run_fold(fold: int, splits, cfg: dict, data, num_classes: int, device) -> di
         if hasattr(tower, "early_pass"):
             tower.early_pass(context)
 
+    # Flatten parallel wrappers so sub-stage configs are addressable by name.
+    flat_stages: list[dict] = []
+    for s in cfg_stages:
+        if s.get("type") == "parallel":
+            flat_stages.extend(s["stages"])
+        else:
+            flat_stages.append(s)
+
     stage_models: dict = {}
     fold_result         = {"fold": fold}
+    fold_preds:   dict  = {}   # stage_name → pred_data
 
     for stage_cfg in cfg_stages:
         stype = stage_cfg["type"]
 
         if stype == "warm":
-            warm.run(stage_cfg, towers, data, split, label_filter,
-                     cfg, num_classes, device, fold,
-                     _make_loader, _balanced_sampler)
+            stage_models = warm.run(
+                stage_cfg, towers, data, split, label_filter,
+                cfg, num_classes, device, fold,
+                _make_loader, _balanced_sampler, stage_models, flat_stages,
+            )
 
         elif stype == "fusion":
-            stage_models, metrics = fusion.run(
+            stage_models, metrics, preds = fusion.run(
                 stage_cfg, cfg, towers, stage_models, data, split,
-                label_filter, num_classes, device, fold, cfg_stages,
+                label_filter, num_classes, device, fold, flat_stages,
                 _make_loader,
             )
             fold_result.update(metrics)
+            fold_preds.update(preds)
+
+        elif stype == "parallel":
+            stage_models, metrics, preds = parallel.run(
+                stage_cfg, cfg, towers, stage_models, data, split,
+                label_filter, num_classes, device, fold, flat_stages,
+                _make_loader, _balanced_sampler,
+            )
+            fold_result.update(metrics)
+            fold_preds.update(preds)
 
         # head stages are handled inside fusion.run
 
-    return fold_result
+    return fold_result, fold_preds
 
 
 # ---------------------------------------------------------------------------
@@ -239,8 +261,11 @@ def main():
         out_dir = out_dir / tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    eval_stage   = cfg.get("eval_stage", "hb")
-    fold_results = []
+    eval_stage        = cfg.get("eval_stage", "hb")
+    save_predictions  = cfg.get("save_predictions", False)
+    save_features     = cfg.get("save_features", False)
+    fold_results      = []
+    eval_stage_preds  = []   # list[dict] — one per fold, only for eval_stage
     t0 = time.time()
 
     for fold in range(cfg.get("folds", 5)):
@@ -248,8 +273,10 @@ def main():
         n_train = split.train[group_col].nunique() if group_col else len(split.train)
         print(f"\n── fold {fold+1}/{cfg.get('folds', 5)}  train_groups={n_train} ──",
               flush=True)
-        result = run_fold(fold, splits, cfg, data, num_classes, device)
+        result, fold_preds = run_fold(fold, splits, cfg, data, num_classes, device)
         fold_results.append(result)
+        if save_predictions and eval_stage in fold_preds:
+            eval_stage_preds.append(fold_preds[eval_stage])
         print(
             f"  fold{fold+1} DONE"
             f"  val_auc={result.get(f'{eval_stage}_val_auc', float('nan')):.4f}"
@@ -273,12 +300,88 @@ def main():
             "elapsed_s":     round(time.time() - t0, 1),
             "fold_results":  fold_results,
         }
+        out_dir.mkdir(parents=True, exist_ok=True)
         summary_path = out_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2))
         print(f"\n{'='*60}", flush=True)
         print(f"Val  AUC: {summary['mean_val_auc']:.4f} ± {summary['std_val_auc']:.4f}", flush=True)
         print(f"Test AUC: {summary['mean_test_auc']:.4f} ± {summary['std_test_auc']:.4f}", flush=True)
         print(f"Saved: {summary_path}", flush=True)
+
+        if save_predictions and eval_stage_preds:
+            # Collect all unique entity_ids across val+test sets of all folds.
+            seen, all_ids, id_to_y = set(), [], {}
+            for fp in eval_stage_preds:
+                for eid, y in zip(fp["val_ids"], fp["val_y"]):
+                    k = str(eid)
+                    if k not in seen:
+                        seen.add(k); all_ids.append(eid)
+                    id_to_y[k] = int(y)
+                if fp.get("test_ids"):
+                    for eid, y in zip(fp["test_ids"], fp["test_y"]):
+                        k = str(eid)
+                        if k not in seen:
+                            seen.add(k); all_ids.append(eid)
+                        id_to_y[k] = int(y)
+
+            y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
+            store  = PredictionStore(n_folds=len(eval_stage_preds), n_classes=num_classes)
+            store.register_phase(
+                phase=eval_stage,
+                entity_ids=all_ids,
+                y_true=y_true,
+                head_names=[f"{eval_stage}_head"],
+                n_epochs=1,
+            )
+            for fold_idx, fp in enumerate(eval_stage_preds):
+                store.record(eval_stage, fold_idx, 0, fp["val_ids"],
+                             f"{eval_stage}_head", fp["val_p"])
+                store.set_split(eval_stage, fold_idx, fp["val_ids"], "val")
+                if fp.get("test_ids"):
+                    store.record(eval_stage, fold_idx, 0, fp["test_ids"],
+                                 f"{eval_stage}_head", fp["test_p"])
+                    store.set_split(eval_stage, fold_idx, fp["test_ids"], "test")
+
+            pred_path = out_dir / "predictions.h5"
+            store.save(pred_path)
+            print(f"Predictions saved: {pred_path}", flush=True)
+
+        if save_features and eval_stage_preds:
+            emb_dim = eval_stage_preds[0]["val_z"].shape[-1]
+            fstore  = FeatureStore(n_folds=len(eval_stage_preds))
+
+            # Build entity_id / y_true universe (same as predictions).
+            seen, all_ids, id_to_y = set(), [], {}
+            for fp in eval_stage_preds:
+                for eid, y in zip(fp["val_ids"], fp["val_y"]):
+                    k = str(eid)
+                    if k not in seen:
+                        seen.add(k); all_ids.append(eid)
+                    id_to_y[k] = int(y)
+                if fp.get("test_ids"):
+                    for eid, y in zip(fp["test_ids"], fp["test_y"]):
+                        k = str(eid)
+                        if k not in seen:
+                            seen.add(k); all_ids.append(eid)
+                        id_to_y[k] = int(y)
+
+            y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
+            fstore.register_phase(phase=eval_stage, entity_ids=all_ids, y_true=y_true)
+            fstore.register_head(phase=eval_stage, head=f"{eval_stage}_embedding",
+                                 n_epochs=1, embedding_dim=emb_dim)
+
+            for fold_idx, fp in enumerate(eval_stage_preds):
+                fstore.record(eval_stage, fold_idx, 0, fp["val_ids"],
+                              f"{eval_stage}_embedding", fp["val_z"])
+                fstore.set_split(eval_stage, fold_idx, fp["val_ids"], "val")
+                if fp.get("test_ids") and fp.get("test_z") is not None:
+                    fstore.record(eval_stage, fold_idx, 0, fp["test_ids"],
+                                  f"{eval_stage}_embedding", fp["test_z"])
+                    fstore.set_split(eval_stage, fold_idx, fp["test_ids"], "test")
+
+            feat_path = out_dir / "features.h5"
+            fstore.save(feat_path)
+            print(f"Features saved: {feat_path}", flush=True)
 
 
 if __name__ == "__main__":

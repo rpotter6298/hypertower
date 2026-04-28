@@ -17,6 +17,7 @@ SegMapDataset          — Dataset yielding (seg_tensor, label) pairs
 SegCNN                 — pretrained CNN adapted for segmentation-map input
 GeometryTower          — TowerBase implementation (the main class to use)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,29 +36,33 @@ from tqdm import tqdm
 import pandas as pd
 
 from v3.classes.towerbase import TowerBase
+from v3.classes.towerbase import TowerBase, EarlyPassContext
 
 
 # ---------------------------------------------------------------------------
 # Data record
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SegMapRecord:
     """One labelled eye sample for the seg-map CNN."""
+
     sample_id: str
-    image_path: Path           # original fundus image (used by unet mode)
-    annotation_disc: Path      # contour (.txt) or mask (.bmp/.png)
+    image_path: Path  # original fundus image (used by unet mode)
+    annotation_disc: Path  # contour (.txt) or mask (.bmp/.png)
     annotation_cup: Path
     annotation_type_disc: str  # "contour" or "mask"
     annotation_type_cup: str
-    patient_id: int            # for group-CV: keep both eyes of a patient together
-    eye: str                   # "OD" or "OS"
-    label: int                 # 0 = Normal, 1 = Glaucoma
+    patient_id: int  # for group-CV: keep both eyes of a patient together
+    eye: str  # "OD" or "OS"
+    label: int  # 0 = Normal, 1 = Glaucoma
 
 
 # ---------------------------------------------------------------------------
 # Seg-map utilities
 # ---------------------------------------------------------------------------
+
 
 def _combine_masks(disc_mask: np.ndarray, cup_mask: np.ndarray) -> np.ndarray:
     """Combine binary disc and cup masks into a 3-class label map.
@@ -68,9 +73,9 @@ def _combine_masks(disc_mask: np.ndarray, cup_mask: np.ndarray) -> np.ndarray:
       2 — optic cup
     """
     disc = (disc_mask > 0).astype(np.uint8)
-    cup  = (cup_mask  > 0).astype(np.uint8)
-    cup  = (cup & disc)          # structural prior: cup must be inside disc
-    seg  = disc + cup            # 0, 1 (rim), or 2 (cup)
+    cup = (cup_mask > 0).astype(np.uint8)
+    cup = cup & disc  # structural prior: cup must be inside disc
+    seg = disc + cup  # 0, 1 (rim), or 2 (cup)
     return seg.astype(np.uint8)
 
 
@@ -86,7 +91,7 @@ def crop_to_disc(seg_map: np.ndarray) -> np.ndarray:
         return seg_map
     r0, r1 = int(np.argmax(rows)), int(len(rows) - 1 - np.argmax(rows[::-1]))
     c0, c1 = int(np.argmax(cols)), int(len(cols) - 1 - np.argmax(cols[::-1]))
-    return seg_map[r0:r1 + 1, c0:c1 + 1]
+    return seg_map[r0 : r1 + 1, c0 : c1 + 1]
 
 
 def seg_map_to_tensor(
@@ -104,13 +109,13 @@ def seg_map_to_tensor(
     seg = np.array(pil, dtype=np.uint8)
 
     if channels == 1:
-        arr = seg.astype(np.float32) / 2.0   # {0, 0.5, 1.0}
+        arr = seg.astype(np.float32) / 2.0  # {0, 0.5, 1.0}
         return torch.from_numpy(arr).unsqueeze(0)
 
     if channels == 3:
-        bg       = (seg == 0).astype(np.float32)
+        bg = (seg == 0).astype(np.float32)
         disc_rim = (seg == 1).astype(np.float32)
-        cup      = (seg == 2).astype(np.float32)
+        cup = (seg == 2).astype(np.float32)
         return torch.from_numpy(np.stack([bg, disc_rim, cup], axis=0))
 
     raise ValueError(f"channels must be 1 or 3, got {channels}")
@@ -120,12 +125,15 @@ def seg_map_to_tensor(
 # GT mask loading (pure NumPy / PIL — no CUDA, safe in DataLoader workers)
 # ---------------------------------------------------------------------------
 
+
 def _load_contour(path: Path) -> np.ndarray:
     """Load x,y contour pairs from a whitespace- or comma-delimited text file."""
     arr = np.zeros((0, 2), dtype=np.float32)
     for delimiter in (",", None):
         try:
-            candidate = np.loadtxt(str(path), delimiter=delimiter, comments="#", dtype=np.float32)
+            candidate = np.loadtxt(
+                str(path), delimiter=delimiter, comments="#", dtype=np.float32
+            )
             if candidate.size > 0:
                 arr = candidate
                 break
@@ -169,7 +177,9 @@ def _extract_masks_from_image(
 
     if arr.ndim == 2:
         edges = np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]])
-        bg_val = int(np.argmax(np.bincount(edges.astype(np.int64).clip(0, 255), minlength=256)))
+        bg_val = int(
+            np.argmax(np.bincount(edges.astype(np.int64).clip(0, 255), minlength=256))
+        )
         disc_arr = (arr != bg_val).astype(np.uint8)
         vals = np.unique(arr)
         non_bg = vals[vals != bg_val]
@@ -184,13 +194,15 @@ def _extract_masks_from_image(
         arr = np.array(img_rgb)
         h, w, c = arr.shape
         edges_rgb = np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]], axis=0)
-        edge_colors, edge_counts = np.unique(edges_rgb.reshape(-1, c), axis=0, return_counts=True)
+        edge_colors, edge_counts = np.unique(
+            edges_rgb.reshape(-1, c), axis=0, return_counts=True
+        )
         bg_color = edge_colors[int(np.argmax(edge_counts))]
         colors, counts = np.unique(arr.reshape(-1, c), axis=0, return_counts=True)
         not_bg = np.any(colors != bg_color.reshape(1, -1), axis=1)
         colors, counts = colors[not_bg], counts[not_bg]
         disc_arr = np.zeros((h, w), dtype=np.uint8)
-        cup_arr  = np.zeros((h, w), dtype=np.uint8)
+        cup_arr = np.zeros((h, w), dtype=np.uint8)
         if colors.shape[0] >= 1:
             order = np.argsort(-counts)
             disc_color = colors[order[0]]
@@ -214,14 +226,16 @@ def load_gt_masks(rec: SegMapRecord, target_size: int) -> Tuple[np.ndarray, np.n
     Returns (disc_mask, cup_mask) as uint8 arrays of shape (target_size, target_size).
     """
     disc_mask: Optional[np.ndarray] = None
-    cup_mask:  Optional[np.ndarray] = None
+    cup_mask: Optional[np.ndarray] = None
 
     with Image.open(rec.image_path) as _img:
         image_size = _img.size  # (width, height)
 
     # ---- Disc ----
     if rec.annotation_type_disc == "mask":
-        disc_mask, cup_from_disc = _extract_masks_from_image(rec.annotation_disc, target_size)
+        disc_mask, cup_from_disc = _extract_masks_from_image(
+            rec.annotation_disc, target_size
+        )
         if cup_from_disc.any():
             cup_mask = cup_from_disc
     else:  # contour
@@ -250,6 +264,7 @@ def load_gt_masks(rec: SegMapRecord, target_size: int) -> Tuple[np.ndarray, np.n
 # U-Net fine-tuning dataset
 # ---------------------------------------------------------------------------
 
+
 class UNetFineTuneDataset(Dataset):
     """Loads (image_tensor, mask_tensor) pairs for fine-tuning the U-Net."""
 
@@ -270,11 +285,11 @@ class UNetFineTuneDataset(Dataset):
     def _normalize(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.normalize == "per_image":
             mean = tensor.mean(dim=(1, 2), keepdim=True)
-            std  = tensor.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            std = tensor.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
             return (tensor - mean) / std
         if self.normalize == "imagenet":
             mean = torch.tensor([0.485, 0.456, 0.406]).view(-1, 1, 1)
-            std  = torch.tensor([0.229, 0.224, 0.225]).view(-1, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(-1, 1, 1)
             return (tensor - mean) / std
         return tensor
 
@@ -294,6 +309,7 @@ class UNetFineTuneDataset(Dataset):
 # U-Net precomputation
 # ---------------------------------------------------------------------------
 
+
 def precompute_unet_seg_maps(
     records: List[SegMapRecord],
     segmenter,
@@ -312,8 +328,8 @@ def precompute_unet_seg_maps(
             logits = segmenter.model(tensor)
         probs = torch.sigmoid(logits)[0].cpu().numpy()
         disc = (probs[0] > threshold).astype(np.uint8)
-        cup  = (probs[1] > threshold).astype(np.uint8)
-        cup  = (cup & disc)
+        cup = (probs[1] > threshold).astype(np.uint8)
+        cup = cup & disc
         seg_maps.append(_combine_masks(disc, cup.astype(np.uint8)))
     return seg_maps
 
@@ -321,6 +337,7 @@ def precompute_unet_seg_maps(
 # ---------------------------------------------------------------------------
 # SegMapDataset
 # ---------------------------------------------------------------------------
+
 
 class SegMapDataset(Dataset):
     """PyTorch Dataset that yields (seg_tensor, label) pairs."""
@@ -445,7 +462,9 @@ class SegCNN(nn.Module):
             if pretrained:
                 with torch.no_grad():
                     new_conv.weight.copy_(
-                        first_conv.weight.mean(dim=1, keepdim=True).expand_as(new_conv.weight)
+                        first_conv.weight.mean(dim=1, keepdim=True).expand_as(
+                            new_conv.weight
+                        )
                     )
             self._replace_first_conv(base, new_conv)
 
@@ -485,6 +504,7 @@ class SegCNN(nn.Module):
 # ---------------------------------------------------------------------------
 # GeometryTower — TowerBase implementation
 # ---------------------------------------------------------------------------
+
 
 class GeometryTower(TowerBase, nn.Module):
     """TowerBase implementation for the optic-disc/cup segmentation modality.
@@ -538,22 +558,22 @@ class GeometryTower(TowerBase, nn.Module):
         finetune_unet_lr: float = 1e-5,
     ):
         nn.Module.__init__(self)
-        self._backbone_name        = backbone
-        self._in_channels          = in_channels
-        self._frozen               = frozen
-        self._target_size          = target_size
-        self._seg_target_size      = seg_target_size
-        self._crop_to_disc         = crop_to_disc
-        self._geometry_source      = geometry_source
-        self._manifest_path        = Path(manifest_path) if manifest_path is not None else None
-        self._weights_path         = Path(weights_path)  if weights_path  is not None else None
-        self._unet_normalize       = unet_normalize
-        self._unet_threshold       = unet_threshold
+        self._backbone_name = backbone
+        self._in_channels = in_channels
+        self._frozen = frozen
+        self._target_size = target_size
+        self._seg_target_size = seg_target_size
+        self._crop_to_disc = crop_to_disc
+        self._geometry_source = geometry_source
+        self._manifest_path = Path(manifest_path) if manifest_path is not None else None
+        self._weights_path = Path(weights_path) if weights_path is not None else None
+        self._unet_normalize = unet_normalize
+        self._unet_threshold = unet_threshold
         self._finetune_unet_epochs = finetune_unet_epochs
-        self._finetune_unet_lr     = finetune_unet_lr
+        self._finetune_unet_lr = finetune_unet_lr
 
-        self._out_dim  = _SEGCNN_FEAT_DIM.get(backbone, 512)
-        self._seg_cnn  = SegCNN(
+        self._out_dim = _SEGCNN_FEAT_DIM.get(backbone, 512)
+        self._seg_cnn = SegCNN(
             num_classes=2,
             backbone=backbone,
             pretrained=pretrained,
@@ -577,6 +597,48 @@ class GeometryTower(TowerBase, nn.Module):
         trainable = not self._frozen and phase in ("tower_warmup", "main")
         for p in self._seg_cnn.parameters():
             p.requires_grad = trainable
+
+    def early_pass(self, context: EarlyPassContext) -> None:
+        """
+        V4 orchestrator hook: combines prepare_fold and augment_samples.
+
+        1. Pre-computes all segmentation maps for the current fold.
+        2. Injects them into the sample dicts held by the context object.
+        """
+        if self._manifest_path is None:
+            raise ValueError("GeometryTower requires manifest_path")
+
+        all_paths: dict = {}
+        for split in (
+            context.eye_train,
+            context.bilat_train,
+            context.bilat_val,
+            context.bilat_test,
+        ):
+            for s in split:
+                for slot in ("image_1", "image_2"):
+                    p = s.get(slot)
+                    if p is not None:
+                        all_paths[str(Path(p).resolve())] = None
+
+        # 1. Pre-compute seg maps (from prepare_fold)
+        if self._geometry_source == "unet":
+            self._prepare_fold_unet(
+                list(all_paths.keys()), context.eye_train, context.device
+            )
+        else:
+            self._prepare_fold_gt(list(all_paths.keys()))
+
+        # 2. Inject into samples (from augment_samples)
+        for samples in (
+            context.eye_train,
+            context.bilat_train,
+            context.bilat_val,
+            context.bilat_test,
+        ):
+            if samples:
+                # This modifies the list of dicts in the context object in-place
+                self.augment_samples(samples)
 
     def prepare_fold(
         self,
@@ -617,7 +679,10 @@ class GeometryTower(TowerBase, nn.Module):
             (self._in_channels, self._target_size, self._target_size), dtype=np.float32
         )
         for s in samples:
-            for img_slot, seg_slot in (("image_1", "seg_map_1"), ("image_2", "seg_map_2")):
+            for img_slot, seg_slot in (
+                ("image_1", "seg_map_1"),
+                ("image_2", "seg_map_2"),
+            ):
                 img_path = s.get(img_slot)
                 if img_path is None:
                     continue
@@ -687,7 +752,10 @@ class GeometryTower(TowerBase, nn.Module):
                 n_ok += 1
             except Exception:
                 self._seg_cache[img_path] = self._seg_map_to_array(blank)
-        print(f"[GeometryTower] {n_ok}/{len(image_paths)} GT seg maps computed", flush=True)
+        print(
+            f"[GeometryTower] {n_ok}/{len(image_paths)} GT seg maps computed",
+            flush=True,
+        )
 
     def _prepare_fold_unet(self, image_paths: list, eye_train: list, device) -> None:
         """Pre-compute U-Net seg maps, with optional per-fold fine-tuning."""
@@ -716,14 +784,20 @@ class GeometryTower(TowerBase, nn.Module):
                     target_size=segmenter.target_size,
                     normalize=self._unet_normalize,
                 ),
-                batch_size=4, shuffle=True, num_workers=0,
+                batch_size=4,
+                shuffle=True,
+                num_workers=0,
             )
-            optimizer = torch.optim.Adam(segmenter.model.parameters(), lr=self._finetune_unet_lr)
+            optimizer = torch.optim.Adam(
+                segmenter.model.parameters(), lr=self._finetune_unet_lr
+            )
             criterion = torch.nn.BCEWithLogitsLoss()
             segmenter.model.train()
             for _ in range(self._finetune_unet_epochs):
                 for images, masks in ft_loader:
-                    images, masks = images.to(segmenter.device), masks.to(segmenter.device)
+                    images, masks = images.to(segmenter.device), masks.to(
+                        segmenter.device
+                    )
                     optimizer.zero_grad()
                     criterion(segmenter.model(images), masks).backward()
                     optimizer.step()
@@ -735,10 +809,15 @@ class GeometryTower(TowerBase, nn.Module):
         )
         records = [
             SegMapRecord(
-                sample_id="", image_path=Path(p),
-                annotation_disc=Path(p), annotation_cup=Path(p),
-                annotation_type_disc="", annotation_type_cup="",
-                patient_id=0, eye="", label=0,
+                sample_id="",
+                image_path=Path(p),
+                annotation_disc=Path(p),
+                annotation_cup=Path(p),
+                annotation_type_disc="",
+                annotation_type_cup="",
+                patient_id=0,
+                eye="",
+                label=0,
             )
             for p in image_paths
         ]
@@ -764,15 +843,17 @@ class GeometryTower(TowerBase, nn.Module):
                 entry = manifest_index.get(key)
                 if entry is None:
                     continue
-                records.append(SegMapRecord(
-                    sample_id="",
-                    image_path=Path(p),
-                    annotation_disc=Path(entry["annotation_disc"]),
-                    annotation_cup=Path(entry["annotation_cup"]),
-                    annotation_type_disc=entry["annotation_type_disc"],
-                    annotation_type_cup=entry["annotation_type_cup"],
-                    patient_id=int(s.get("patient_id", 0)),
-                    eye=str(s.get("eye", "")),
-                    label=int(s.get("label", 0)),
-                ))
+                records.append(
+                    SegMapRecord(
+                        sample_id="",
+                        image_path=Path(p),
+                        annotation_disc=Path(entry["annotation_disc"]),
+                        annotation_cup=Path(entry["annotation_cup"]),
+                        annotation_type_disc=entry["annotation_type_disc"],
+                        annotation_type_cup=entry["annotation_type_cup"],
+                        patient_id=int(s.get("patient_id", 0)),
+                        eye=str(s.get("eye", "")),
+                        label=int(s.get("label", 0)),
+                    )
+                )
         return records

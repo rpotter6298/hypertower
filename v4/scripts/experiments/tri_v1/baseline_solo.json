@@ -1,0 +1,6 @@
+[
+  {
+    "_note": "Standalone geometry tower (UNet seg, MonoBridge) — 10-rep baseline.",
+    "run_name": "experiments/tri_v1/baseline_solo"
+  }
+]

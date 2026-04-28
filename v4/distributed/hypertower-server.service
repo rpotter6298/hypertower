@@ -1,0 +1,17 @@
+[Unit]
+Description=HyperTower distributed job server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/rpotter/hypertower
+Environment=HT_TOKEN=hypertower
+ExecStart=/home/rpotter/miniconda3/envs/fundus_imaging/bin/python -m v4.distributed.server --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

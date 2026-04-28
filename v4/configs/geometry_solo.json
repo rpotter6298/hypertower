@@ -1,0 +1,85 @@
+{
+  "_notes": [
+    "Standalone geometry tower: GeometrySegEncoder over UNet-derived seg maps,",
+    "MonoBridge passthrough, classification head.  Same architecture as the",
+    "seg_cnn_unet_ft_mono test run, used as a 10-rep baseline for comparison",
+    "against tritower configurations."
+  ],
+  "run_name": "v4/geometry_solo",
+  "num_classes": 2,
+  "label_filter": [0, 1],
+  "split_identity_level": 1,
+  "eval_stage": "geom_fuse",
+  "save_predictions": true,
+  "seed": 1234,
+  "folds": 5,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": ["binary"],
+
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": ["Axial_Length"],
+      "in_memory_cache": false
+    }
+  },
+
+  "towers": [
+    {
+      "name": "geom",
+      "module": "v4.classes.towers.geometry_tower",
+      "class": "GeometrySegEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone":            "resnet18",
+        "channels":            3,
+        "target_size":         224,
+        "augment":             true,
+        "freeze_ratio":        0.0,
+        "seg_source":          "unet",
+        "weights_path":        "models/v2/refuge/segmentation/per_image/best.pt",
+        "contour_dir":         "Papila/ExpertsSegmentations/Contours",
+        "unet_size":           512,
+        "normalize":           "per_image",
+        "threshold":           0.5,
+        "crop_to_disc":        true,
+        "finetune_epochs":     10,
+        "finetune_lr":         1e-5,
+        "finetune_batch_size": 4
+      }
+    }
+  ],
+
+  "stages": [
+    {
+      "name": "geom_fuse",
+      "type": "fusion",
+      "module": "v4.classes.bridges.mono_bridge",
+      "class": "MonoBridge",
+      "inputs": ["geom"],
+      "level": "eye",
+      "epochs": 60,
+      "train_towers": true,
+      "args": { "use_ln": false }
+    },
+    {
+      "name": "geom_head",
+      "type": "head",
+      "input": "geom_fuse",
+      "train_with": "geom_fuse",
+      "args": { "dropout": 0.3 }
+    }
+  ],
+
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 16,
+    "tune_binary_threshold": true
+  }
+}

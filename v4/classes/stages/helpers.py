@@ -1,7 +1,30 @@
 """stages/helpers — shared utilities for stage runners."""
 from __future__ import annotations
 
+from collections import Counter
+
 import torch
+
+
+def class_weights_from_shell(
+    shell, num_classes: int, device, *, enabled: bool = True
+) -> torch.Tensor | None:
+    """Return inverse-frequency CE weights normalised to mean 1, or None.
+
+    weights[i] = (N_total / num_classes) / N_class_i  → rare classes weighted higher.
+    Mean(weights) ≈ 1 so overall loss magnitude is unchanged.
+
+    Classes absent from the shell get weight 1.0 (no division-by-zero).
+    """
+    if not enabled or shell is None or not shell.entries:
+        return None
+    counts  = Counter(int(e.label) for e in shell.entries)
+    n_total = sum(counts.values())
+    weights = []
+    for c in range(num_classes):
+        n_c = counts.get(c, 0)
+        weights.append(1.0 if n_c == 0 else n_total / (num_classes * n_c))
+    return torch.tensor(weights, dtype=torch.float32, device=device)
 
 
 def get_out_dim(name: str, towers: dict, stage_models: dict) -> int:

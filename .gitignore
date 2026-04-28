@@ -15,3 +15,6 @@ scripts/deprecated/
 v3/results/*
 scripts/utility/backup_mirror_with_archive.sh
 v3/distributed/logs/*
+v4/configs/**/
+v4/distributed/logs/*
+v4/results/*

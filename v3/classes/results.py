@@ -98,6 +98,10 @@ class FoldResult:
     fused_val_n:         int          = 0
     fused_test_auc:      float        = float("nan")
     fused_test_acc:      float        = float("nan")
+    fused_test_kappa:    float        = float("nan")
+    fused_test_f1:       float        = float("nan")
+    fused_test_ece:      float        = float("nan")
+    fused_test_n:        int          = 0
 
 
 @dataclass
@@ -136,3 +140,5 @@ class FoldArtifacts:
     probs_test:          Optional[np.ndarray] = None
     probs_test_img:      Optional[np.ndarray] = None
     probs_test_md:       Optional[np.ndarray] = None
+    y_true_fused_test:   Optional[np.ndarray] = None
+    probs_fused_test:    Optional[np.ndarray] = None

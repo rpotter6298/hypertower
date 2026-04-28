@@ -2,6 +2,25 @@
 
 Self-contained: no v3 dependencies.
 Inherits get_sample dispatch from TowerBase.
+
+Geometry injection (EPC consumption)
+--------------------------------------
+When geom_dim > 0, ClinicalEncoder requests the "geometry_vectors" key from EPC
+during early_pass and appends the geometry features to every clinical vector.
+The input layer is sized to clinical_data.feature_dim + geom_dim automatically.
+
+Config example (cd tower consuming geometry):
+{
+  "name":         "cd",
+  "module":       "v4.classes.towers.clinical_tower",
+  "class":        "ClinicalEncoder",
+  "data_source":  "matrix",
+  "epc_requests": ["geometry_vectors"],
+  "args": {
+    "hidden_dim": 128,
+    "geom_dim":   5
+  }
+}
 """
 from __future__ import annotations
 
@@ -14,7 +33,7 @@ from v4.classes.accessory.se_block import SEBlock
 
 
 class ClinicalEncoder(TowerBase):
-    """MLP over tabular clinical features.
+    """MLP over tabular clinical features, with optional geometry vector injection.
 
     clinical_data : ClinicalDataView — provides feature_dim, vectorize_entity, side_map
     hidden_dim    : output embedding dimensionality
@@ -22,21 +41,28 @@ class ClinicalEncoder(TowerBase):
     use_se        : wrap output with SEBlock channel gating
     se_reduction  : SEBlock bottleneck factor
     se_pre_norm   : apply LayerNorm before SEBlock
+    geom_dim      : number of geometry features to append from EPC (0 = disabled)
+                    requires epc_requests: ["geometry_vectors"] in tower config
     """
+
+    EPC_GEOMETRY_KEY = "geometry_vectors"
 
     def __init__(
         self,
         clinical_data,
-        hidden_dim: int = 128,
-        dropout: float = 0.1,
-        use_se: bool = False,
-        se_reduction: int = 16,
-        se_pre_norm: bool = True,
+        hidden_dim:  int   = 128,
+        dropout:     float = 0.1,
+        use_se:      bool  = False,
+        se_reduction: int  = 16,
+        se_pre_norm: bool  = True,
+        geom_dim:    int   = 0,
     ):
         super().__init__()
-        self.clinical_data = clinical_data
-        self._out_dim      = hidden_dim
-        feature_dim        = clinical_data.feature_dim
+        self.clinical_data  = clinical_data
+        self._out_dim       = hidden_dim
+        self._geom_dim      = geom_dim
+        self._geom_vectors: dict | None = None  # filled by early_pass when geom_dim > 0
+        feature_dim = clinical_data.feature_dim + geom_dim
 
         self.block0 = nn.Sequential(
             nn.Linear(feature_dim, hidden_dim),
@@ -53,6 +79,12 @@ class ClinicalEncoder(TowerBase):
         self.tower_ln = nn.LayerNorm(hidden_dim) if se_pre_norm else nn.Identity()
         self.tower_se = SEBlock(hidden_dim, reduction=se_reduction, residual=True) if use_se else None
 
+    # ── EPC early_pass ───────────────────────────────────────────────────────
+
+    def early_pass(self, context) -> None:
+        if self._geom_dim > 0:
+            self._geom_vectors = context.require(self.EPC_GEOMETRY_KEY)
+
     # ── TowerBase interface ──────────────────────────────────────────────────
 
     @property
@@ -65,6 +97,14 @@ class ClinicalEncoder(TowerBase):
 
     def _get(self, *ids) -> torch.Tensor:
         arr = self.clinical_data.vectorize_entity(*ids)
+        if self._geom_dim > 0 and self._geom_vectors is not None:
+            pid  = int(ids[0])
+            eye  = str(ids[1]) if len(ids) > 1 else "OD"
+            geom = self._geom_vectors.get(
+                (pid, eye),
+                np.zeros(self._geom_dim, dtype=np.float32),
+            )
+            arr = np.concatenate([arr, geom[: self._geom_dim]])
         return torch.from_numpy(arr.astype(np.float32, copy=False))
 
     # ── nn.Module forward ────────────────────────────────────────────────────

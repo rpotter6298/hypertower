@@ -1,0 +1,22 @@
+[
+  { "_note": "tritower grid pilot (3 reps each) — 3 bcd × 2 cw × 3 nt_epochs = 18 cells",   "run_name": "experiments/tri_v1/grid/bcd35_cw0_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd35_cw0_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd35_cw0_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 36 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd35_cw1_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd35_cw1_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd35_cw1_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.35, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 36 } } },
+
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw0_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw0_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw0_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 36 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw1_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw1_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd50_cw1_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.50, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 36 } } },
+
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw0_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw0_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw0_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": false } }, "stage_overrides": { "nt": { "epochs": 36 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw1_nt15", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 15 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw1_nt25", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 25 } } },
+  { "run_name": "experiments/tri_v1/grid/bcd75_cw1_nt36", "reps": 3, "overrides": { "training": { "bcd_prob": 0.75, "class_weighted": true  } }, "stage_overrides": { "nt": { "epochs": 36 } } }
+]

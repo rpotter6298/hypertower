@@ -1,10 +1,10 @@
 {
   "_notes": [
-    "Shared-weight bilateral architecture: one img tower and one cd tower,",
-    "each called for both eyes. nt trains on all eye-level data.",
-    "hb fuses nt(OD) and nt(OS) at patient level using the same frozen nt."
+    "Shared-weight bilateral architecture + GT geometry injection.",
+    "img supplies geometry_vectors via EPC; cd consumes them.",
+    "Same shared-weight structure as ensemble_fused.json."
   ],
-  "run_name": "v4/ensemble_fused",
+  "run_name": "v4/ensemble_fused_geom_gt",
   "num_classes": 2,
   "label_filter": [
     0,
@@ -40,10 +40,15 @@
       "module": "v4.classes.towers.image_tower",
       "class": "ImageEncoder",
       "data_source": "image",
+      "epc_supplies": [
+        "geometry_vectors"
+      ],
       "args": {
         "backbone": "refugelike",
         "freeze_ratio": 0.0,
-        "augment": true
+        "augment": true,
+        "geometry_source": "gt",
+        "contour_dir": "Papila/ExpertsSegmentations/Contours"
       }
     },
     {
@@ -51,8 +56,12 @@
       "module": "v4.classes.towers.clinical_tower",
       "class": "ClinicalEncoder",
       "data_source": "matrix",
+      "epc_requests": [
+        "geometry_vectors"
+      ],
       "args": {
-        "hidden_dim": 128
+        "hidden_dim": 128,
+        "geom_dim": 5
       }
     }
   ],

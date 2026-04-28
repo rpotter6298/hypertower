@@ -1,15 +1,15 @@
 {
   "_notes": [
-    "Shared-weight bilateral architecture: one img tower and one cd tower,",
-    "each called for both eyes. nt trains on all eye-level data.",
-    "hb fuses nt(OD) and nt(OS) at patient level using the same frozen nt."
+    "Tri-tower shared-weight bilateral: img + cd + geom (UNet seg maps).",
+    "Default parameters; serves as both a 10-rep baseline and as the base",
+    "config for the bcd/cw/nt-epochs grid search.",
+    "geom is a GeometrySegEncoder over per-fold fine-tuned UNet predictions.",
+    "geom trains alongside img inside nt with the standard tower_warmup phase",
+    "(no separate geom_warm stage).  hb fuses nt(OD) and nt(OS) at patient level."
   ],
-  "run_name": "v4/ensemble_fused",
+  "run_name": "v4/tritower",
   "num_classes": 2,
-  "label_filter": [
-    0,
-    1
-  ],
+  "label_filter": [0, 1],
   "split_identity_level": 1,
   "eval_stage": "hb",
   "save_predictions": true,
@@ -17,9 +17,8 @@
   "folds": 5,
   "fold_seed": 100,
   "output_root": "v4/results",
-  "out_dir_tags": [
-    "binary"
-  ],
+  "out_dir_tags": ["binary"],
+
   "data": {
     "module": "v4.classes.profiles.v4papila",
     "args": {
@@ -28,12 +27,11 @@
       "label_col": "Diagnosis",
       "iop_corr_method": "ratio",
       "iop_drop_raw": true,
-      "exclude_cols": [
-        "Axial_Length"
-      ],
+      "exclude_cols": ["Axial_Length"],
       "in_memory_cache": true
     }
   },
+
   "towers": [
     {
       "name": "img",
@@ -54,8 +52,32 @@
       "args": {
         "hidden_dim": 128
       }
+    },
+    {
+      "name": "geom",
+      "module": "v4.classes.towers.geometry_tower",
+      "class": "GeometrySegEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone":            "resnet18",
+        "channels":            3,
+        "target_size":         224,
+        "augment":             true,
+        "freeze_ratio":        0.0,
+        "seg_source":          "unet",
+        "weights_path":        "models/v2/refuge/segmentation/per_image/best.pt",
+        "contour_dir":         "Papila/ExpertsSegmentations/Contours",
+        "unet_size":           512,
+        "normalize":           "per_image",
+        "threshold":           0.5,
+        "crop_to_disc":        true,
+        "finetune_epochs":     10,
+        "finetune_lr":         1e-5,
+        "finetune_batch_size": 4
+      }
     }
   ],
+
   "stages": [
     {
       "name": "cd_warm",
@@ -80,14 +102,18 @@
       "bcd": true
     },
     {
+      "name": "geom_aux",
+      "type": "head",
+      "input": "geom",
+      "train_with": "nt",
+      "bcd": true
+    },
+    {
       "name": "nt",
       "type": "fusion",
       "module": "v4.classes.bridges.fusion_bridge",
       "class": "FusionBridge",
-      "inputs": [
-        "img",
-        "cd"
-      ],
+      "inputs": ["img", "cd", "geom"],
       "level": "eye",
       "epochs": 36,
       "train_towers": true,
@@ -110,10 +136,7 @@
       "type": "fusion",
       "module": "v4.classes.bridges.hyperbridge",
       "class": "HyperBridge",
-      "inputs": {
-        "a": "nt",
-        "b": "nt"
-      },
+      "inputs": { "a": "nt", "b": "nt" },
       "level": "patient",
       "epochs": 10,
       "args": {
@@ -126,15 +149,15 @@
       "type": "head",
       "input": "hb",
       "train_with": "hb",
-      "args": {
-        "dropout": 0.3
-      }
+      "args": { "dropout": 0.3 }
     }
   ],
+
   "training": {
     "lr": 1e-4,
     "batch_size": 8,
     "bcd_prob": 0.5,
-    "tune_binary_threshold": true
+    "tune_binary_threshold": true,
+    "class_weighted": false
   }
 }
