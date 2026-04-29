@@ -126,16 +126,14 @@ class GeometrySegEncoder(TowerBase):
     # ── EPC early_pass ───────────────────────────────────────────────────────
 
     def early_pass(self, context) -> None:
-        data   = context.require("data")
-        split  = context.require("split")
+        data  = context.require("data")
+        split = context.require("split")
 
-        train_samples = self._collect_samples(split.train, data)
-        all_samples   = self._collect_samples(split.train, data)
-        all_samples  += self._collect_samples(split.val,   data)
+        train_samples = data.collect_samples(split.train)
+        all_samples   = train_samples + data.collect_samples(split.val)
         if split.test is not None:
-            all_samples += self._collect_samples(split.test, data)
+            all_samples += data.collect_samples(split.test)
 
-        # Reset per-fold state if loader supports it (UNet only).
         if hasattr(self._loader, "reset_cache"):
             self._loader.reset_cache()
         if hasattr(self._loader, "reset_weights"):
@@ -171,18 +169,6 @@ class GeometrySegEncoder(TowerBase):
                 p.requires_grad = False
 
     # ── Internals ────────────────────────────────────────────────────────────
-
-    def _collect_samples(self, df, data) -> list:
-        """Build (pid, eye, image_path) tuples from a split DataFrame."""
-        if df is None or len(df) == 0:
-            return []
-        pc = data.patient_col
-        out = []
-        for _, row in df.iterrows():
-            pid = int(row[pc])
-            eye = str(row.get("eyeID", "OD"))
-            out.append((pid, eye, data.image.get_image_path(pid, eye)))
-        return out
 
     @staticmethod
     def _augment_array(arr: np.ndarray) -> np.ndarray:

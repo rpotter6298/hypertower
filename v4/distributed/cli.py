@@ -126,11 +126,12 @@ def _clients_table(api: _API) -> str:
             c["hostname"],
             c["gpu_info"][:30],
             s["state"],
+            (s.get("job_id") or "-")[:12],
             s.get("run_name") or "-",
             prog,
             _ago(c["last_seen"]),
         ])
-    headers = ["ID", "HOST", "GPU", "STATE", "RUN", "PROGRESS", "SEEN"]
+    headers = ["ID", "HOST", "GPU", "STATE", "JOB_ID", "RUN", "PROGRESS", "SEEN"]
     widths = [max(len(str(r[i])) for r in ([headers] + rows)) for i in range(len(headers))]
     sep = "  "
     lines = []

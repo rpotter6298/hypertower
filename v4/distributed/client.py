@@ -232,6 +232,20 @@ def _run_job(job: JobSpec, server: _Server,
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / f"job_{job.job_id}.log"
     ctx: dict = {}
+    last_push = [time.time()]  # mutable holder so _tail and _heartbeat share it
+
+    def _push():
+        server.push_status(StatusPush(
+            state="running",
+            job_id=job.job_id,
+            run_name=job.run_name,
+            fold=ctx.get("fold"),
+            stage=ctx.get("stage"),
+            epoch=ctx.get("epoch"),
+            total_epochs=ctx.get("total_epochs"),
+            last_val_auc=ctx.get("last_val_auc"),
+        ))
+        last_push[0] = time.time()
 
     def _tail(path: Path):
         with open(path, "r") as f:
@@ -242,22 +256,25 @@ def _run_job(job: JobSpec, server: _Server,
                     info = _parse_line(raw)
                     ctx.update(info)
                     if "epoch" in info:
-                        server.push_status(StatusPush(
-                            state="running",
-                            job_id=job.job_id,
-                            run_name=job.run_name,
-                            fold=ctx.get("fold"),
-                            stage=ctx.get("stage"),
-                            epoch=ctx.get("epoch"),
-                            total_epochs=ctx.get("total_epochs"),
-                            last_val_auc=ctx.get("last_val_auc"),
-                        ))
+                        _push()
                 elif proc.poll() is not None:
                     for raw in f:
                         print(raw, end="", flush=True)
                     break
                 else:
                     time.sleep(0.05)
+
+    def _heartbeat():
+        # Push a status update every ~30s even when no log line is parsed.
+        # Prevents the server's reaper from declaring this client stale during
+        # long deterministic blocks (UNet fine-tune, data load, etc.).
+        while proc.poll() is None:
+            time.sleep(5)
+            if time.time() - last_push[0] >= 30:
+                try:
+                    _push()
+                except Exception:
+                    pass
 
     with open(log_file, "w") as logf:
         proc = subprocess.Popen(
@@ -268,10 +285,13 @@ def _run_job(job: JobSpec, server: _Server,
             start_new_session=True,
         )
 
-    tailer = threading.Thread(target=_tail, args=(log_file,), daemon=True)
+    tailer    = threading.Thread(target=_tail,      args=(log_file,), daemon=True)
+    heartbeat = threading.Thread(target=_heartbeat,                     daemon=True)
     tailer.start()
+    heartbeat.start()
     proc.wait()
     tailer.join(timeout=5)
+    heartbeat.join(timeout=5)
     log_file.unlink(missing_ok=True)
 
     success = proc.returncode == 0

@@ -507,6 +507,25 @@ class PapilaBundle:
         """
         return [self._bundle.patient_col, "eyeID"]
 
+    # ── Sample collection (for tower early_pass) ─────────────────────────────
+
+    def collect_samples(self, df: pd.DataFrame | None) -> list[tuple]:
+        """Build (pid, eye, image_path) tuples from a split DataFrame.
+
+        Used by tower early_pass implementations that need per-eye image paths
+        (UNet inference, contour rasterisation, etc.).  Returns [] for an
+        empty/None df.
+        """
+        if df is None or len(df) == 0:
+            return []
+        pc = self._bundle.patient_col
+        out: list[tuple] = []
+        for _, row in df.iterrows():
+            pid = int(row[pc])
+            eye = str(row.get("eyeID", "OD"))
+            out.append((pid, eye, self.image.get_image_path(pid, eye)))
+        return out
+
     # ── Backward-compat delegates ────────────────────────────────────────────
 
     @property

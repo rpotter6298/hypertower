@@ -124,70 +124,46 @@ def compute_geometry_features(disc_mask: np.ndarray, cup_mask: np.ndarray) -> np
 # ---------------------------------------------------------------------------
 
 class GTGeometryLoader:
-    """Pre-computes per-eye geometry vectors from PAPILA GT contour annotations.
+    """Per-eye 5-feature CDR vectors from PAPILA GT contour annotations.
 
-    File naming: RET{pid:03d}{eye}_{disc|cup}_exp{n}.txt
-    Averages exp1 and exp2 when both are present; zero vector for missing entries.
-
-    Usage:
-        loader = GTGeometryLoader(contour_dir)
-        loader.precompute(df, patient_col="Patient ID")
-        vecs = loader.all_vectors()   # {(pid, eye): ndarray}
+    Loads contour coordinates from per-expert text files, rasterises them at
+    the original image's pixel space (so polygons aren't clipped), then
+    computes the CDR feature vector.  Expert masks are merged before feature
+    computation to match the seg-map path.
     """
-
-    _EXPERTS = (1, 2)
 
     feature_dim   = _FEATURE_DIM
     feature_names = _FEATURE_NAMES
 
-    def __init__(self, contour_dir: str | Path) -> None:
-        self._dir   = Path(contour_dir)
+    def __init__(self, contour_dir: str | Path, *, mask_size: int = _MASK_SIZE[0]) -> None:
+        self._dir       = Path(contour_dir)
+        self._mask_size = mask_size
         self._cache: dict[tuple, np.ndarray] = {}
 
-    def precompute(self, df, patient_col: str = "Patient ID") -> None:
+    def reset_cache(self) -> None:
+        self._cache.clear()
+
+    def precompute(self, samples: Iterable[Tuple[int, str, Path]]) -> None:
         n_ok = 0
-        for _, row in df.iterrows():
-            pid = int(row[patient_col])
-            eye = str(row.get("eyeID", "OD"))
+        for pid, eye, image_path in samples:
             key = (pid, eye)
             if key in self._cache:
                 continue
-            vec = self._compute(pid, eye)
-            self._cache[key] = vec if vec is not None else np.zeros(self.feature_dim, dtype=np.float32)
-            if vec is not None:
+            with Image.open(image_path) as img:
+                image_size = img.size  # (W, H)
+            res = _papila_disc_cup_masks(
+                pid, eye, self._dir, image_size, self._mask_size,
+            )
+            if res is None:
+                self._cache[key] = np.zeros(self.feature_dim, dtype=np.float32)
+            else:
+                disc, cup = res
+                self._cache[key] = compute_geometry_features(disc, cup)
                 n_ok += 1
         print(f"[GTGeometryLoader] {n_ok}/{len(self._cache)} geometry vectors computed", flush=True)
 
     def all_vectors(self) -> dict:
         return dict(self._cache)
-
-    def _compute(self, pid: int, eye: str) -> "np.ndarray | None":
-        stem = f"RET{pid:03d}{eye}"
-        vecs: list[np.ndarray] = []
-        for exp in self._EXPERTS:
-            disc_path = self._dir / f"{stem}_disc_exp{exp}.txt"
-            cup_path  = self._dir / f"{stem}_cup_exp{exp}.txt"
-            if not disc_path.exists():
-                continue
-            try:
-                disc_c = np.loadtxt(disc_path)
-                if disc_c.ndim == 1:
-                    disc_c = disc_c.reshape(-1, 2)
-                disc_mask = _contour_to_mask(disc_c, _MASK_SIZE)
-                if cup_path.exists():
-                    cup_c = np.loadtxt(cup_path)
-                    if cup_c.ndim == 1:
-                        cup_c = cup_c.reshape(-1, 2)
-                    cup_mask = _contour_to_mask(cup_c, _MASK_SIZE)
-                else:
-                    cup_mask = np.zeros((_MASK_SIZE[1], _MASK_SIZE[0]), dtype=np.uint8)
-                cup_mask = ((cup_mask > 0) & (disc_mask > 0)).astype(np.uint8)
-                vecs.append(compute_geometry_features(disc_mask, cup_mask))
-            except Exception:
-                continue
-        if not vecs:
-            return None
-        return np.stack(vecs).mean(axis=0).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -411,12 +387,103 @@ class _UNetFTDataset(Dataset):
         return self._imgs[idx], self._masks[idx]
 
 
+class _PapilaUNetMaskPipeline:
+    """Per-fold UNet mask producer.
+
+    Owns a UNetSegmenter, handles the per-fold lifecycle:
+      - reset_weights() restores REFUGE base state (call at start of each fold)
+      - finetune(train_samples) fine-tunes on the train split's GT contours
+      - predict(samples) returns {(pid, eye): (disc_mask, cup_mask)} raw masks
+
+    Downstream loaders interpret the raw masks differently — seg-map loader
+    crops/resizes/encodes for a CNN, geometry-vector loader computes 5 CDR
+    features.  Sharing this pipeline avoids duplicating UNet load + finetune
+    when both seg-map and feature-vector outputs are needed in one config.
+    """
+
+    def __init__(
+        self,
+        weights_path:        str | Path,
+        *,
+        contour_dir:         str | Path,
+        unet_size:           int   = 512,
+        normalize:           str   = "per_image",
+        threshold:           float = 0.5,
+        finetune_epochs:     int   = 0,
+        finetune_lr:         float = 1e-5,
+        finetune_batch_size: int   = 4,
+        device:              str | None = None,
+    ) -> None:
+        from v4.classes.accessory.unet import UNetSegmenter
+
+        self._contour_dir   = Path(contour_dir)
+        self._threshold     = threshold
+        self._ft_epochs     = finetune_epochs
+        self._ft_lr         = finetune_lr
+        self._ft_batch_size = finetune_batch_size
+
+        self._segmenter = UNetSegmenter(
+            target_size=unet_size, normalize=normalize, device=device,
+        ).load_weights(Path(weights_path))
+        self._base_state = copy.deepcopy(self._segmenter.model.state_dict())
+
+    def reset_weights(self) -> None:
+        """Restore base REFUGE weights (undo any prior fine-tuning)."""
+        self._segmenter.model.load_state_dict(copy.deepcopy(self._base_state))
+
+    def finetune(self, train_samples: list) -> None:
+        """Fine-tune the UNet on the training fold's GT contours."""
+        if self._ft_epochs <= 0:
+            return
+        ds = _UNetFTDataset(train_samples, self._contour_dir, self._segmenter)
+        loader = DataLoader(
+            ds, batch_size=self._ft_batch_size, shuffle=True, num_workers=0,
+        )
+        print(
+            f"[UNetMaskPipeline] fine-tuning UNet for {self._ft_epochs} epochs "
+            f"on {len(train_samples)} samples (lr={self._ft_lr}, "
+            f"batch_size={self._ft_batch_size})",
+            flush=True,
+        )
+        self._segmenter.finetune(
+            loader, epochs=self._ft_epochs, lr=self._ft_lr,
+            log_prefix="[UNet ft]",
+        )
+
+    def predict(
+        self, samples: Iterable[Tuple[int, str, Path]],
+    ) -> dict[tuple, Tuple[np.ndarray, np.ndarray]]:
+        """Run inference. Returns {(pid, eye): (disc_mask, cup_mask)} raw uint8."""
+        import time
+        samples = list(samples)
+        if not samples:
+            return {}
+        print(
+            f"[UNetMaskPipeline] running UNet inference on {len(samples)} images...",
+            flush=True,
+        )
+        result: dict[tuple, Tuple[np.ndarray, np.ndarray]] = {}
+        t0     = time.time()
+        report = max(1, len(samples) // 4)
+        for i, (pid, eye, image_path) in enumerate(samples, 1):
+            with Image.open(image_path) as raw:
+                disc, cup = self._segmenter.predict(raw, threshold=self._threshold)
+            result[(pid, eye)] = (disc, cup)
+            if i % report == 0 or i == len(samples):
+                print(
+                    f"  [UNet inf] {i}/{len(samples)}  ({time.time() - t0:.1f}s)",
+                    flush=True,
+                )
+        return result
+
+
 class UNetSegMapLoader:
-    """Pre-computes per-eye seg maps via a REFUGE-pretrained UNet.
+    """Per-eye CNN-ready seg maps via a REFUGE-pretrained UNet.
 
-    Optionally fine-tunes the UNet per fold on the training split's GT contours.
+    Wraps a `_PapilaUNetMaskPipeline` and post-processes raw masks into
+    (C, H, W) float32 arrays sized for a downstream CNN.
 
-    Output: dict {(pid, eye): np.ndarray (C, H, W) float32} cached for the fold.
+    Output: dict {(pid, eye): np.ndarray (C, H, W) float32}
     """
 
     def __init__(
@@ -435,22 +502,20 @@ class UNetSegMapLoader:
         finetune_batch_size: int   = 4,
         device:              str | None = None,
     ) -> None:
-        from v4.classes.accessory.unet import UNetSegmenter
-
-        self._weights_path        = Path(weights_path)
-        self._contour_dir         = Path(contour_dir)
-        self._channels            = channels
-        self._target_size         = target_size
-        self._threshold           = threshold
-        self._crop                = crop_to_disc
-        self._ft_epochs           = finetune_epochs
-        self._ft_lr               = finetune_lr
-        self._ft_batch_size       = finetune_batch_size
-
-        self._segmenter = UNetSegmenter(
-            target_size=unet_size, normalize=normalize, device=device,
-        ).load_weights(self._weights_path)
-        self._base_state = copy.deepcopy(self._segmenter.model.state_dict())
+        self._pipeline = _PapilaUNetMaskPipeline(
+            weights_path,
+            contour_dir=contour_dir,
+            unet_size=unet_size,
+            normalize=normalize,
+            threshold=threshold,
+            finetune_epochs=finetune_epochs,
+            finetune_lr=finetune_lr,
+            finetune_batch_size=finetune_batch_size,
+            device=device,
+        )
+        self._channels    = channels
+        self._target_size = target_size
+        self._crop        = crop_to_disc
         self._cache: dict[tuple, np.ndarray] = {}
 
     @property
@@ -458,70 +523,96 @@ class UNetSegMapLoader:
         return (self._channels, self._target_size, self._target_size)
 
     def reset_cache(self) -> None:
-        """Clear cached seg maps (call between folds)."""
         self._cache.clear()
 
     def reset_weights(self) -> None:
-        """Restore base REFUGE weights (undo any prior fine-tuning)."""
-        self._segmenter.model.load_state_dict(copy.deepcopy(self._base_state))
+        self._pipeline.reset_weights()
 
     def finetune(self, train_samples: list) -> None:
-        """Fine-tune the UNet on the training fold's GT contours.
-
-        train_samples: list of (pid, eye, image_path) tuples — train split only.
-        """
-        if self._ft_epochs <= 0:
-            return
-        ds = _UNetFTDataset(train_samples, self._contour_dir, self._segmenter)
-        loader = DataLoader(
-            ds, batch_size=self._ft_batch_size, shuffle=True, num_workers=0,
-        )
-        print(
-            f"[UNetSegMapLoader] fine-tuning UNet for {self._ft_epochs} epochs "
-            f"on {len(train_samples)} samples (lr={self._ft_lr}, "
-            f"batch_size={self._ft_batch_size})",
-            flush=True,
-        )
-        self._segmenter.finetune(
-            loader, epochs=self._ft_epochs, lr=self._ft_lr,
-            log_prefix="[UNet ft]",
-        )
+        self._pipeline.finetune(train_samples)
 
     def precompute(self, samples: Iterable[Tuple[int, str, Path]]) -> None:
-        """Run UNet inference on every sample and cache the resulting seg map."""
-        import time
-        samples = list(samples)
-        todo    = [s for s in samples if (s[0], s[1]) not in self._cache]
-        if not todo:
-            return
-        print(
-            f"[UNetSegMapLoader] running UNet inference on {len(todo)} images...",
-            flush=True,
-        )
-        t0     = time.time()
-        report = max(1, len(todo) // 4)
-        for i, (pid, eye, image_path) in enumerate(todo, 1):
-            with Image.open(image_path) as raw:
-                disc, cup = self._segmenter.predict(raw, threshold=self._threshold)
+        todo  = [s for s in samples if (s[0], s[1]) not in self._cache]
+        masks = self._pipeline.predict(todo)
+        for (pid, eye), (disc, cup) in masks.items():
             seg = _combine_disc_cup(disc, cup)
             if self._crop:
                 seg = _crop_to_disc_bbox(seg)
             self._cache[(pid, eye)] = _seg_map_to_array(
                 seg, self._channels, self._target_size,
             )
-            if i % report == 0 or i == len(todo):
-                print(
-                    f"  [UNet inf] {i}/{len(todo)}  ({time.time() - t0:.1f}s)",
-                    flush=True,
-                )
-        print(
-            f"[UNetSegMapLoader] {len(todo)} seg maps cached via UNet "
-            f"(channels={self._channels}, target={self._target_size})",
-            flush=True,
-        )
+        if masks:
+            print(
+                f"[UNetSegMapLoader] {len(masks)} seg maps cached "
+                f"(channels={self._channels}, target={self._target_size})",
+                flush=True,
+            )
 
     def all_seg_maps(self) -> dict:
         return self._cache
+
+
+class UNetGeometryLoader:
+    """Per-eye 5-feature CDR vectors derived from UNet-predicted masks.
+
+    Same UNet lifecycle as `UNetSegMapLoader` but the output is a 5-vector
+    (compute_geometry_features over the predicted disc/cup masks) rather
+    than a CNN-ready seg map.  Designed to slot into ImageEncoder's
+    geometry_source mechanism for vector-style geometry injection.
+    """
+
+    feature_dim   = _FEATURE_DIM
+    feature_names = _FEATURE_NAMES
+
+    def __init__(
+        self,
+        weights_path: str | Path,
+        *,
+        contour_dir:         str | Path,
+        unet_size:           int   = 512,
+        normalize:           str   = "per_image",
+        threshold:           float = 0.5,
+        finetune_epochs:     int   = 0,
+        finetune_lr:         float = 1e-5,
+        finetune_batch_size: int   = 4,
+        device:              str | None = None,
+    ) -> None:
+        self._pipeline = _PapilaUNetMaskPipeline(
+            weights_path,
+            contour_dir=contour_dir,
+            unet_size=unet_size,
+            normalize=normalize,
+            threshold=threshold,
+            finetune_epochs=finetune_epochs,
+            finetune_lr=finetune_lr,
+            finetune_batch_size=finetune_batch_size,
+            device=device,
+        )
+        self._cache: dict[tuple, np.ndarray] = {}
+
+    def reset_cache(self) -> None:
+        self._cache.clear()
+
+    def reset_weights(self) -> None:
+        self._pipeline.reset_weights()
+
+    def finetune(self, train_samples: list) -> None:
+        self._pipeline.finetune(train_samples)
+
+    def precompute(self, samples: Iterable[Tuple[int, str, Path]]) -> None:
+        todo  = [s for s in samples if (s[0], s[1]) not in self._cache]
+        masks = self._pipeline.predict(todo)
+        for (pid, eye), (disc, cup) in masks.items():
+            self._cache[(pid, eye)] = compute_geometry_features(disc, cup)
+        if masks:
+            print(
+                f"[UNetGeometryLoader] {len(masks)} geometry vectors cached "
+                f"(dim={self.feature_dim})",
+                flush=True,
+            )
+
+    def all_vectors(self) -> dict:
+        return dict(self._cache)
 
 
 # ---------------------------------------------------------------------------
@@ -529,18 +620,33 @@ class UNetSegMapLoader:
 # ---------------------------------------------------------------------------
 
 def build_geometry_loader(source: str, **kwargs):
-    """Return the appropriate geometry-vector loader for the given source string.
+    """Return the appropriate geometry-vector loader for the given source.
 
     Parameters
     ----------
-    source      : "gt" | "unet"
-    contour_dir : (gt) path to contour annotation directory
+    source : "gt" | "unet"
+
+    GT kwargs:
+        contour_dir
+    UNet kwargs:
+        weights_path, contour_dir, unet_size=512, normalize="per_image",
+        threshold=0.5, finetune_epochs=0, finetune_lr=1e-5,
+        finetune_batch_size=4, device=None
     """
     if source == "gt":
         contour_dir = kwargs.get("contour_dir")
         if contour_dir is None:
             raise ValueError("build_geometry_loader source='gt' requires contour_dir")
         return GTGeometryLoader(contour_dir)
+    if source == "unet":
+        if "weights_path" not in kwargs:
+            raise ValueError("build_geometry_loader source='unet' requires weights_path")
+        if "contour_dir" not in kwargs:
+            raise ValueError(
+                "build_geometry_loader source='unet' requires contour_dir "
+                "(needed for per-fold fine-tuning, even if finetune_epochs=0)"
+            )
+        return UNetGeometryLoader(**kwargs)
     raise NotImplementedError(f"build_geometry_loader: source={source!r} not implemented")
 
 

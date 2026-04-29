@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "GT-derived 5-feature CDR vector injected into cd via EPC. Re-run with bug fix (rasterisation now in original image space, not 512x512 canvas). 3 reps.",
+    "run_name": "experiments/tri_v1/geom_vec_gt",
+    "reps": 3
+  }
+]

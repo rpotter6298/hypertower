@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "UNet-derived 5-feature CDR vector injected into cd via EPC. 3 reps.",
+    "run_name": "experiments/tri_v1/geom_vec_unet",
+    "reps": 3
+  }
+]

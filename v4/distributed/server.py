@@ -48,13 +48,20 @@ _DB_PATH: Path = Path("v4/distributed/jobs.db")
 _REPO_ROOT: Path = Path.cwd()
 _CLIENT_TTL: int = 120  # seconds before a client is considered gone
 _MAX_ATTEMPTS: int = 3  # max times a job is retried before being left as failed
+_SERVER_START_TS: float = 0.0  # set in main(); used as a reaper grace window
 
 _clients: dict[str, ClientInfo] = {}
 _clients_lock = threading.Lock()
 
 
 def _reap_stale_clients():
-    """Background thread: remove silent clients and re-queue their running jobs."""
+    """Background thread: remove silent clients and re-queue their running jobs.
+
+    On startup, the in-memory `_clients` dict is empty until clients re-register
+    via the `please_reregister` mechanism.  We skip the running-job re-queue pass
+    for the first `_CLIENT_TTL` seconds after startup so still-alive clients have
+    time to come back; otherwise the reaper would orphan their jobs.
+    """
     while True:
         time.sleep(30)
         cutoff = datetime.now(timezone.utc).timestamp() - _CLIENT_TTL
@@ -72,6 +79,10 @@ def _reap_stale_clients():
                 )
                 del _clients[cid]
             known_ids = set(_clients.keys())
+
+        in_grace = (time.time() - _SERVER_START_TS) < _CLIENT_TTL
+        if in_grace:
+            continue
 
         with _db() as conn:
             rows = conn.execute(
@@ -454,12 +465,13 @@ def main():
     if not args.token:
         ap.error("--token is required (or set HT_TOKEN)")
 
-    global _TOKEN, _DB_PATH, _REPO_ROOT, _CLIENT_TTL, _MAX_ATTEMPTS
+    global _TOKEN, _DB_PATH, _REPO_ROOT, _CLIENT_TTL, _MAX_ATTEMPTS, _SERVER_START_TS
     _TOKEN = args.token
     _DB_PATH = Path(args.db)
     _REPO_ROOT = Path(args.root).resolve() if args.root else Path.cwd()
     _CLIENT_TTL = args.client_ttl
     _MAX_ATTEMPTS = args.max_attempts
+    _SERVER_START_TS = time.time()
     _init_db()
 
     reaper = threading.Thread(target=_reap_stale_clients, daemon=True)
