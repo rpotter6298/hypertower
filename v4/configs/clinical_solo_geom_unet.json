@@ -1,0 +1,103 @@
+{
+  "_notes": [
+    "Diagnostic: cd tower alone, with UNet-derived 5-feature CDR vector injection.",
+    "img tower is present only as an EPC supplier — its early_pass runs the UNet",
+    "fine-tune+inference pipeline and publishes geometry_vectors, but no stage",
+    "uses its embedding so its CNN body sits idle.",
+    "cd consumes the vectors via epc_requests and trains under MonoBridge."
+  ],
+  "run_name": "v4/clinical_solo_geom_unet",
+  "num_classes": 2,
+  "label_filter": [0, 1],
+  "split_identity_level": 1,
+  "eval_stage": "cd_fuse",
+  "save_predictions": true,
+  "save_features":    true,
+  "seed": 1234,
+  "folds": 5,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": ["binary"],
+
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": ["Axial_Length"],
+      "in_memory_cache": false
+    }
+  },
+
+  "towers": [
+    {
+      "name": "img",
+      "module": "v4.classes.towers.image_tower",
+      "class": "ImageEncoder",
+      "data_source": "image",
+      "epc_supplies": ["geometry_vectors"],
+      "args": {
+        "backbone":            "refugelike",
+        "freeze_ratio":        1.0,
+        "augment":             false,
+        "geometry_source":     "unet",
+        "weights_path":        "models/v2/refuge/segmentation/per_image/best.pt",
+        "contour_dir":         "Papila/ExpertsSegmentations/Contours",
+        "unet_size":           512,
+        "normalize":           "per_image",
+        "threshold":           0.5,
+        "finetune_epochs":     10,
+        "finetune_lr":         1e-5,
+        "finetune_batch_size": 4
+      }
+    },
+    {
+      "name": "cd",
+      "module": "v4.classes.towers.clinical_tower",
+      "class": "ClinicalEncoder",
+      "data_source": "matrix",
+      "epc_requests": ["geometry_vectors"],
+      "args": {
+        "hidden_dim": 128,
+        "geom_dim":   5
+      }
+    }
+  ],
+
+  "stages": [
+    {
+      "name": "cd_warm",
+      "type": "warm",
+      "tower": "cd",
+      "head_name": "cd_aux",
+      "level": "eye",
+      "epochs": 40
+    },
+    {
+      "name": "cd_aux",
+      "type": "head",
+      "input": "cd",
+      "train_with": "cd_fuse"
+    },
+    {
+      "name": "cd_fuse",
+      "type": "fusion",
+      "module": "v4.classes.bridges.mono_bridge",
+      "class": "MonoBridge",
+      "inputs": ["cd"],
+      "level": "eye",
+      "epochs": 36,
+      "train_towers": true,
+      "args": { "use_ln": false }
+    }
+  ],
+
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 16,
+    "tune_binary_threshold": true
+  }
+}

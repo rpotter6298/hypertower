@@ -1,0 +1,13 @@
+[
+  { "_note": "cd-solo, no geom; cd_warm sweep. 3 reps each. Companion to cd_solo_geom sweep.",
+    "run_name": "experiments/tri_v1/cd_solo/warm00", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs":  0 } } },
+  { "run_name": "experiments/tri_v1/cd_solo/warm05", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs":  5 } } },
+  { "run_name": "experiments/tri_v1/cd_solo/warm10", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 10 } } },
+  { "run_name": "experiments/tri_v1/cd_solo/warm20", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 20 } } },
+  { "run_name": "experiments/tri_v1/cd_solo/warm40", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 40 } } }
+]

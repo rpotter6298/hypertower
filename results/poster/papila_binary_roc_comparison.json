@@ -1,0 +1,61 @@
+{
+  "figure": "/home/rpotter/hypertower/results/poster/papila_binary_roc_comparison.png",
+  "curves": [
+    {
+      "label": "Clinical Data Only",
+      "source_kind": "legacy_npy",
+      "mode_dir": "analysis_data/pipeline_mdonly_500ep/binary/single",
+      "run": null,
+      "tower_path": null,
+      "score_col": null,
+      "probs_stem": "probs_classic",
+      "auc_mean": 0.7311688311688311,
+      "auc_std": 0.08461127279353979,
+      "auc_pooled": 0.6812987012987013,
+      "fold_count": 5,
+      "n_total": 400
+    },
+    {
+      "label": "Image Only",
+      "source_kind": "v3_csv",
+      "mode_dir": null,
+      "run": "phase2/imageonly_resnet50_proper",
+      "tower_path": "binary/single",
+      "score_col": "prob_img_c1",
+      "probs_stem": null,
+      "auc_mean": 0.819264705882353,
+      "auc_std": 0.0740851608018641,
+      "auc_pooled": 0.8099584558823529,
+      "fold_count": 50,
+      "n_total": 4200
+    },
+    {
+      "label": "Single Fusion",
+      "source_kind": "v3_csv",
+      "mode_dir": null,
+      "run": "phase5/single_fused",
+      "tower_path": "binary/single",
+      "score_col": "prob_fused_c1",
+      "probs_stem": null,
+      "auc_mean": 0.8506801470588234,
+      "auc_std": 0.07392522372615995,
+      "auc_pooled": 0.8402091911764706,
+      "fold_count": 50,
+      "n_total": 4200
+    },
+    {
+      "label": "Ensemble Fusion",
+      "source_kind": "v3_csv",
+      "mode_dir": null,
+      "run": "phase5/logit_mlp_head",
+      "tower_path": "binary/ensemble",
+      "score_col": "prob_fused_c1",
+      "probs_stem": null,
+      "auc_mean": 0.8988235294117648,
+      "auc_std": 0.06435919826554772,
+      "auc_pooled": 0.8855705882352942,
+      "fold_count": 50,
+      "n_total": 2100
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "Single rep of tritower default with save_features=true so we can inspect nt-stage embeddings (Hadamard-product collapse hypothesis).",
+    "run_name": "experiments/tri_v1/baseline_tri_features",
+    "reps": 1,
+    "overrides": {
+      "save_features": true
+    }
+  }
+]

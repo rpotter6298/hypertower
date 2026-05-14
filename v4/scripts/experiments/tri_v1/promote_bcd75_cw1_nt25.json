@@ -1,0 +1,16 @@
+[
+  {
+    "_note": "Promote grid winner bcd75_cw1_nt25 (3-rep test AUC 0.910) to 10 reps. First 3 reps will be skipped (already on disk).",
+    "run_name": "experiments/tri_v1/grid/bcd75_cw1_nt25",
+    "reps": 10,
+    "overrides": {
+      "training": {
+        "bcd_prob": 0.75,
+        "class_weighted": true
+      }
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 25 }
+    }
+  }
+]

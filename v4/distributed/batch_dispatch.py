@@ -169,7 +169,7 @@ def dispatch_batch(
             server_cfg_path = str(rel_path)
 
             job_body = {
-                "run_name":   run_name,
+                "run_name":   cfg["run_name"],   # per-rep, e.g. ".../rep05"
                 "module":     "v4.classes.v4_hypertower",
                 "args":       ["--config", server_cfg_path],
                 "output_dir": output_root,

@@ -1,0 +1,13 @@
+[
+  { "_note": "cd-solo + UNet geom-vector inject; cd_warm sweep. 3 reps each.",
+    "run_name": "experiments/tri_v1/cd_solo_geom/warm00", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs":  0 } } },
+  { "run_name": "experiments/tri_v1/cd_solo_geom/warm05", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs":  5 } } },
+  { "run_name": "experiments/tri_v1/cd_solo_geom/warm10", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 10 } } },
+  { "run_name": "experiments/tri_v1/cd_solo_geom/warm20", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 20 } } },
+  { "run_name": "experiments/tri_v1/cd_solo_geom/warm40", "reps": 3,
+    "stage_overrides": { "cd_warm": { "epochs": 40 } } }
+]
