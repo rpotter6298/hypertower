@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "Single rep of tritower default with save_features=true and ALL fusion phases captured (nt + hb). New run_name so it doesn't skip the prior single-phase result.",
+    "run_name": "experiments/tri_v1/baseline_tri_features_all",
+    "reps": 1,
+    "overrides": {
+      "save_features": true
+    }
+  }
+]

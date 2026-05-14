@@ -1,0 +1,143 @@
+{
+  "_notes": [
+    "Two-tower ensemble: cd + geom seg-CNN (UNet seg source).",
+    "Mirrors ensemble_fused.json but swaps the img tower for the geom tower.",
+    "Tells us how close the seg-CNN-over-masks gets to the image tower's contribution",
+    "when paired with clinical features."
+  ],
+  "run_name": "v4/cd_geom_duo",
+  "num_classes": 2,
+  "label_filter": [0, 1],
+  "split_identity_level": 1,
+  "eval_stage": "hb",
+  "save_predictions": true,
+  "save_features": true,
+  "seed": 1234,
+  "folds": 5,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": ["binary"],
+
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": ["Axial_Length"],
+      "in_memory_cache": false
+    }
+  },
+
+  "towers": [
+    {
+      "name": "cd",
+      "module": "v4.classes.towers.clinical_tower",
+      "class": "ClinicalEncoder",
+      "data_source": "matrix",
+      "args": {
+        "hidden_dim": 128
+      }
+    },
+    {
+      "name": "geom",
+      "module": "v4.classes.towers.geometry_tower",
+      "class": "GeometrySegEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone":            "resnet18",
+        "channels":            3,
+        "target_size":         224,
+        "augment":             true,
+        "freeze_ratio":        0.0,
+        "seg_source":          "unet",
+        "weights_path":        "models/v2/refuge/segmentation/per_image/best.pt",
+        "contour_dir":         "Papila/ExpertsSegmentations/Contours",
+        "unet_size":           512,
+        "normalize":           "per_image",
+        "threshold":           0.5,
+        "crop_to_disc":        true,
+        "finetune_epochs":     10,
+        "finetune_lr":         1e-5,
+        "finetune_batch_size": 4
+      }
+    }
+  ],
+
+  "stages": [
+    {
+      "name": "cd_warm",
+      "type": "warm",
+      "tower": "cd",
+      "head_name": "cd_aux",
+      "level": "eye",
+      "epochs": 40
+    },
+    {
+      "name": "cd_aux",
+      "type": "head",
+      "input": "cd",
+      "train_with": "nt",
+      "bcd": true
+    },
+    {
+      "name": "geom_aux",
+      "type": "head",
+      "input": "geom",
+      "train_with": "nt",
+      "bcd": true
+    },
+    {
+      "name": "nt",
+      "type": "fusion",
+      "module": "v4.classes.bridges.fusion_bridge",
+      "class": "FusionBridge",
+      "inputs": ["cd", "geom"],
+      "level": "eye",
+      "epochs": 36,
+      "train_towers": true,
+      "warmup": {
+        "tower_epochs": 3,
+        "fused_epochs": 3
+      },
+      "args": {
+        "fusion_dim": 256
+      }
+    },
+    {
+      "name": "nt_head",
+      "type": "head",
+      "input": "nt",
+      "train_with": "nt"
+    },
+    {
+      "name": "hb",
+      "type": "fusion",
+      "module": "v4.classes.bridges.hyperbridge",
+      "class": "HyperBridge",
+      "inputs": { "a": "nt", "b": "nt" },
+      "level": "patient",
+      "epochs": 10,
+      "args": {
+        "hidden_dim": 256,
+        "mode": "embedding_mlp"
+      }
+    },
+    {
+      "name": "hb_head",
+      "type": "head",
+      "input": "hb",
+      "train_with": "hb",
+      "args": { "dropout": 0.3 }
+    }
+  ],
+
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 8,
+    "bcd_prob": 0.5,
+    "tune_binary_threshold": true
+  }
+}

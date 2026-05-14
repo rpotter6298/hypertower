@@ -35,8 +35,20 @@ def load_phase(features_path: Path, phase: str | None):
                 f"Phase {phase!r} not in {features_path} (available: {phases})"
             )
         g = f[phase]
-        z      = g["z"][:]            # (n_folds, n_samples, n_dim)
-        split  = g["split"][:].astype(str)  # (n_folds, n_samples)
+        emb_keys = [k for k in g.keys() if k.endswith("_embedding")]
+        if not emb_keys:
+            raise SystemExit(
+                f"No '*_embedding' dataset in phase {phase!r} of {features_path}"
+            )
+        # Prefer the embedding named after the phase if present, else first match.
+        emb_key = f"{phase}_embedding" if f"{phase}_embedding" in emb_keys else emb_keys[0]
+        z_raw  = g[emb_key][:]
+        # Stored shape is (n_folds, n_epochs, n_samples, n_dim). Use last epoch.
+        if z_raw.ndim == 4:
+            z = z_raw[:, -1, :, :]
+        else:
+            z = z_raw
+        split  = g["split"][:].astype(str)
         y_true = g["y_true"][:]
     return phase, z, split, y_true, phases
 
@@ -58,9 +70,11 @@ def main():
     phase, z, split, _, all_phases = load_phase(feat, args.phase)
 
     val_mask  = (split == "val")
-    z_val     = z[val_mask]   # (n_val_total, n_dim)
+    z_val     = z[val_mask]
     z_train   = z[(split == "train")]
-    n_dim     = z_val.shape[-1]
+    n_dim     = z_val.shape[-1] if z_val.size else 0
+    if n_dim == 0:
+        raise SystemExit(f"No val embeddings found for phase {phase!r}")
 
     print(f"Run:      {args.run_dir}")
     print(f"File:     {feat}")

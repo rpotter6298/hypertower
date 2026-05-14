@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "cd + geom (seg-CNN) two-tower ensemble — img-tower removed. 3 reps as a pilot; promote to 10 if it lands near img+cd's 0.896.",
+    "run_name": "experiments/tri_v1/cd_geom_duo",
+    "reps": 3
+  }
+]

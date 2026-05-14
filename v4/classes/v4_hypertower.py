@@ -266,6 +266,7 @@ def main():
     save_features     = cfg.get("save_features", False)
     fold_results      = []
     eval_stage_preds  = []   # list[dict] — one per fold, only for eval_stage
+    all_phase_preds: dict[str, list[dict]] = {}  # phase → list[dict] across folds
     t0 = time.time()
 
     for fold in range(cfg.get("folds", 5)):
@@ -277,6 +278,11 @@ def main():
         fold_results.append(result)
         if save_predictions and eval_stage in fold_preds:
             eval_stage_preds.append(fold_preds[eval_stage])
+        if save_features:
+            for ph, pdata in fold_preds.items():
+                if pdata.get("val_z") is None:
+                    continue
+                all_phase_preds.setdefault(ph, []).append(pdata)
         print(
             f"  fold{fold+1} DONE"
             f"  val_auc={result.get(f'{eval_stage}_val_auc', float('nan')):.4f}"
@@ -346,42 +352,43 @@ def main():
             store.save(pred_path)
             print(f"Predictions saved: {pred_path}", flush=True)
 
-        if save_features and eval_stage_preds:
-            emb_dim = eval_stage_preds[0]["val_z"].shape[-1]
-            fstore  = FeatureStore(n_folds=len(eval_stage_preds))
-
-            # Build entity_id / y_true universe (same as predictions).
-            seen, all_ids, id_to_y = set(), [], {}
-            for fp in eval_stage_preds:
-                for eid, y in zip(fp["val_ids"], fp["val_y"]):
-                    k = str(eid)
-                    if k not in seen:
-                        seen.add(k); all_ids.append(eid)
-                    id_to_y[k] = int(y)
-                if fp.get("test_ids"):
-                    for eid, y in zip(fp["test_ids"], fp["test_y"]):
+        if save_features and all_phase_preds:
+            # One FeatureStore covers all phases; each phase gets its own group.
+            n_folds_any = max(len(v) for v in all_phase_preds.values())
+            fstore = FeatureStore(n_folds=n_folds_any)
+            for phase, phase_preds in all_phase_preds.items():
+                emb_dim = phase_preds[0]["val_z"].shape[-1]
+                seen, all_ids, id_to_y = set(), [], {}
+                for fp in phase_preds:
+                    for eid, y in zip(fp["val_ids"], fp["val_y"]):
                         k = str(eid)
                         if k not in seen:
                             seen.add(k); all_ids.append(eid)
                         id_to_y[k] = int(y)
+                    if fp.get("test_ids"):
+                        for eid, y in zip(fp["test_ids"], fp["test_y"]):
+                            k = str(eid)
+                            if k not in seen:
+                                seen.add(k); all_ids.append(eid)
+                            id_to_y[k] = int(y)
+                y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
+                fstore.register_phase(phase=phase, entity_ids=all_ids, y_true=y_true)
+                fstore.register_head(phase=phase, head=f"{phase}_embedding",
+                                     n_epochs=1, embedding_dim=emb_dim)
 
-            y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
-            fstore.register_phase(phase=eval_stage, entity_ids=all_ids, y_true=y_true)
-            fstore.register_head(phase=eval_stage, head=f"{eval_stage}_embedding",
-                                 n_epochs=1, embedding_dim=emb_dim)
-
-            for fold_idx, fp in enumerate(eval_stage_preds):
-                fstore.record(eval_stage, fold_idx, 0, fp["val_ids"],
-                              f"{eval_stage}_embedding", fp["val_z"])
-                fstore.set_split(eval_stage, fold_idx, fp["val_ids"], "val")
-                if fp.get("test_ids") and fp.get("test_z") is not None:
-                    fstore.record(eval_stage, fold_idx, 0, fp["test_ids"],
-                                  f"{eval_stage}_embedding", fp["test_z"])
-                    fstore.set_split(eval_stage, fold_idx, fp["test_ids"], "test")
+                for fold_idx, fp in enumerate(phase_preds):
+                    fstore.record(phase, fold_idx, 0, fp["val_ids"],
+                                  f"{phase}_embedding", fp["val_z"])
+                    fstore.set_split(phase, fold_idx, fp["val_ids"], "val")
+                    if fp.get("test_ids") and fp.get("test_z") is not None:
+                        fstore.record(phase, fold_idx, 0, fp["test_ids"],
+                                      f"{phase}_embedding", fp["test_z"])
+                        fstore.set_split(phase, fold_idx, fp["test_ids"], "test")
 
             feat_path = out_dir / "features.h5"
             fstore.save(feat_path)
-            print(f"Features saved: {feat_path}", flush=True)
+            print(f"Features saved (phases: {sorted(all_phase_preds.keys())}): {feat_path}",
+                  flush=True)
 
 
 if __name__ == "__main__":
