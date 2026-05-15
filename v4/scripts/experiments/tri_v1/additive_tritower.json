@@ -1,0 +1,12 @@
+[
+  {
+    "_note": "Full img+cd+geom tritower with additive nt bridge. With 3 streams competing through Hadamard, suppression risk is highest here — biggest expected lift if the hypothesis holds. 3 reps.",
+    "run_name": "experiments/tri_v1/additive/tritower",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "args": { "fusion_dim": 256, "additive": true }
+      }
+    }
+  }
+]

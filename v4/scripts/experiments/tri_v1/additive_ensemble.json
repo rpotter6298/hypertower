@@ -1,0 +1,12 @@
+[
+  {
+    "_note": "img+cd ensemble with additive nt bridge (shifted-multiply, no Hadamard collapse). 3 reps.",
+    "run_name": "experiments/tri_v1/additive/ensemble",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "args": { "fusion_dim": 256, "additive": true }
+      }
+    }
+  }
+]

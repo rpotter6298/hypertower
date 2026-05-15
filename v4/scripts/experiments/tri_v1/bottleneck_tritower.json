@@ -1,0 +1,36 @@
+[
+  { "_note": "Bottleneck experiment — fusion_dim=8 forces each bridge to compress aggressively. 4 bridges × 3 reps; if shapes-are-just-equivalent hypothesis is right, all 4 should still converge; if the bridges differ in compression priorities, AUC should diverge meaningfully.",
+
+    "run_name": "experiments/tri_v1/bottleneck/hadamard_tritower", "reps": 3,
+    "stage_overrides": {
+      "nt": { "args": { "fusion_dim": 8 } }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/concat_tritower", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/pairwise_tritower", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/gated_tritower", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  }
+]

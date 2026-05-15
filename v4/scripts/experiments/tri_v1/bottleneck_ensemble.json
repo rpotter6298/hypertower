@@ -1,0 +1,36 @@
+[
+  { "_note": "Bottleneck experiment for the 2-stream ensemble. 4 bridges × 3 reps at fusion_dim=8.",
+
+    "run_name": "experiments/tri_v1/bottleneck/hadamard_ensemble", "reps": 3,
+    "stage_overrides": {
+      "nt": { "args": { "fusion_dim": 8 } }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/concat_ensemble", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/pairwise_ensemble", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/bottleneck/gated_ensemble", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 8 }
+      }
+    }
+  }
+]

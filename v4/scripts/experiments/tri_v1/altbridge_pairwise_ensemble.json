@@ -1,0 +1,14 @@
+[
+  {
+    "_note": "img+cd ensemble with PairwiseAdditiveBridge — for N=2 this reduces to a single weighted (1+a)(1+b)-1 fusion (≈ FusionBridge additive=True). 3 reps.",
+    "run_name": "experiments/tri_v1/altbridge/ensemble_pairwise",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

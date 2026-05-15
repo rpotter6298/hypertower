@@ -1,0 +1,14 @@
+[
+  {
+    "_note": "Tritower with PairwiseAdditiveBridge — keeps 2-way interactions, drops 3-way/abc terms. 3 reps.",
+    "run_name": "experiments/tri_v1/altbridge/pairwise",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

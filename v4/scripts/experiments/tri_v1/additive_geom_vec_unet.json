@@ -1,0 +1,12 @@
+[
+  {
+    "_note": "img+cd + UNet-CDR vector injection with additive nt bridge. Direct test of whether Hadamard suppression explained why geom inject doesn't help. 3 reps.",
+    "run_name": "experiments/tri_v1/additive/geom_vec_unet",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "args": { "fusion_dim": 256, "additive": true }
+      }
+    }
+  }
+]

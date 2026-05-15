@@ -1,0 +1,12 @@
+[
+  {
+    "_note": "Promote additive ensemble to 10 reps. First 3 will be skipped (results exist).",
+    "run_name": "experiments/tri_v1/additive/ensemble",
+    "reps": 10,
+    "stage_overrides": {
+      "nt": {
+        "args": { "fusion_dim": 256, "additive": true }
+      }
+    }
+  }
+]

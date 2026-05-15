@@ -309,6 +309,8 @@ def _parallel_fusion(
                     if not losses:
                         continue
                     loss = sum(losses) / len(losses)
+                    if hasattr(bridge, "modify_loss"):
+                        loss = bridge.modify_loss(loss)
                     ctx["opt"].zero_grad(); loss.backward(); ctx["opt"].step()
                     total_loss += loss.item() * len(y_t)
                     total_n    += len(y_t)
@@ -322,6 +324,8 @@ def _parallel_fusion(
                 if logits is None:
                     continue
                 loss = F.cross_entropy(logits, y_t, weight=ctx["class_weights"])
+                if hasattr(bridge, "modify_loss"):
+                    loss = bridge.modify_loss(loss)
                 ctx["opt"].zero_grad(); loss.backward(); ctx["opt"].step()
                 total_correct += int((logits.argmax(1) == y_t).sum())
                 total_loss    += loss.item() * len(y_t)

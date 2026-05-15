@@ -241,6 +241,8 @@ def run(
                 if not losses:
                     continue
                 loss = sum(losses) / len(losses)
+                if hasattr(bridge, "modify_loss"):
+                    loss = bridge.modify_loss(loss)
                 opt.zero_grad(); loss.backward(); opt.step()
                 total_loss += loss.item() * len(y_t)
                 total_n    += len(y_t)
@@ -254,6 +256,8 @@ def run(
             if logits is None:
                 continue
             loss = F.cross_entropy(logits, y_t, weight=cw)
+            if hasattr(bridge, "modify_loss"):
+                loss = bridge.modify_loss(loss)
             opt.zero_grad(); loss.backward(); opt.step()
             total_correct += int((logits.argmax(1) == y_t).sum())
             total_loss    += loss.item() * len(y_t)

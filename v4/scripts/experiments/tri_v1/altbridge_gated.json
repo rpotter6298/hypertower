@@ -1,0 +1,14 @@
+[
+  {
+    "_note": "Tritower with GatedAdditiveBridge — per-sample sigmoid gates over each stream. 3 reps.",
+    "run_name": "experiments/tri_v1/altbridge/gated",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

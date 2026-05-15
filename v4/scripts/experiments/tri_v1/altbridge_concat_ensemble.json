@@ -1,0 +1,14 @@
+[
+  {
+    "_note": "img+cd ensemble with ConcatBridge — 2-stream variant of the concat experiment. 3 reps.",
+    "run_name": "experiments/tri_v1/altbridge/ensemble_concat",
+    "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]
