@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Bilateral img-only with refugelike — missing corner of the img_solo single-vs-bilateral × refugelike-vs-V2M grid. (Bilateral V2-M already exists at 0.8923.)",
+    "run_name": "experiments/refuge_v2m_baseline/img_solo_bilateral_refugelike",
+    "reps": 10
+  }
+]

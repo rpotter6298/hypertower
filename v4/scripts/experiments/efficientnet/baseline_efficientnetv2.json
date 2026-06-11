@@ -1,0 +1,43 @@
+[
+  {
+    "_note": "EfficientNetV2-S (ImageNet, torchvision). 20M params, 1280-dim output. Direct comparison to B7 unfrozen (0.9015 test AUC).",
+    "run_name": "experiments/efficientnet/baseline_efficientnetv2_s",
+    "reps": 3,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "efficientnet_v2_s",
+          "freeze_ratio": 0.0
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "EfficientNetV2-S + freeze 0.4. Applies the lesson from refugelike_freeze_sweep — anchoring low-level filters from ImageNet pretraining.",
+    "run_name": "experiments/efficientnet/baseline_efficientnetv2_s_freeze40",
+    "reps": 3,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "efficientnet_v2_s",
+          "freeze_ratio": 0.4
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "EfficientNetV2-M (53M params). Mid-size variant; tests whether extra capacity helps or overfits on PAPILA.",
+    "run_name": "experiments/efficientnet/baseline_efficientnetv2_m",
+    "reps": 3,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "efficientnet_v2_m",
+          "freeze_ratio": 0.0
+        }
+      }
+    }
+  }
+]

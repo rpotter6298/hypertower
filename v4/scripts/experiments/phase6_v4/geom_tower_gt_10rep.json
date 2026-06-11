@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "Tritower (img+cd+geom) with the geom tower fed GT contour-rasterized masks instead of UNet predictions. Completes the geometry panel by disentangling 'GT signal is what matters' from 'vector form is what matters'. 10 reps at refugelike.",
+    "run_name": "experiments/phase6_v4/tritower_geom_gt",
+    "reps": 10,
+    "tower_overrides": {
+      "geom": { "args": { "seg_source": "gt" } }
+    }
+  }
+]

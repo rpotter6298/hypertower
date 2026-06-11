@@ -1,0 +1,20 @@
+[
+  {
+    "_note": "Promote ortho_w0.1 tritower to 10 reps. First 3 will be skipped (results exist).",
+    "run_name": "experiments/tri_v1/ortho/tritower_w0.1",
+    "reps": 10,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  }
+]

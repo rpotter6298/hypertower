@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Image tower only, regression. Ablation vs baseline_reg_nt50 to isolate the contribution of fundus images.",
+    "run_name": "experiments/reg_head/img_solo_reg",
+    "reps": 3
+  }
+]

@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "S1 V2-M: ensemble + GT geometry vector injection at refuge V2-M. Pairs with ensemble_fused/geom_gt (refugelike) for cross-backbone geometry view.",
+    "run_name": "experiments/v2m_variants/ensemble_geom_vec_gt_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

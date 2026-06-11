@@ -1,0 +1,149 @@
+[
+  {
+    "_note": "Ortho-wrapped Hadamard at w=0.1 — best ortho weight from prior sweep. Bumped to 10 reps after 3-rep showed +0.009 vs anchor.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_ortho_w0.1",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "ConcatBridge alternative to Hadamard.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_concat",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "PairwiseAdditiveBridge — for N=2 streams this reduces to ≈ FusionBridge additive=True. Bumped to 10 reps after 3-rep showed +0.017 vs anchor (but with a suspicious val/test gap).",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_pairwise",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "GatedAdditiveBridge — per-sample sigmoid gates over each stream.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_gated",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "Ortho w=0.1 wrapping ConcatBridge inner.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_ortho_concat_w0.1",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.concat_bridge",
+          "inner_class":  "ConcatBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "Ortho w=0.1 wrapping PairwiseAdditiveBridge inner.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_ortho_pairwise_w0.1",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.pairwise_bridge",
+          "inner_class":  "PairwiseAdditiveBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "Ortho w=0.1 wrapping GatedAdditiveBridge inner.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_ortho_gated_w0.1",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.gated_bridge",
+          "inner_class":  "GatedAdditiveBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "Bottleneck (fusion_dim=8) — tests whether the new backbone still survives aggressive compression.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_bottleneck",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": { "args": { "fusion_dim": 8 } }
+    }
+  }
+]

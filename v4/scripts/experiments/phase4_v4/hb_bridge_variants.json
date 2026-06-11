@@ -1,0 +1,12 @@
+[
+  {
+    "_note": "Bilateral img+cd ensemble at refugelike with HyperBridge mode = classic_bridge (Hadamard per-side projection + product) instead of the default embedding_mlp (concat + linear). For Figure 4 inset showing the bilateral-fusion bridge choice doesn't materially change the patient-level result.",
+    "run_name": "experiments/phase4_v4/ensemble_hb_classic_bridge",
+    "reps": 10,
+    "stage_overrides": {
+      "hb": {
+        "args": { "hidden_dim": 256, "mode": "classic_bridge" }
+      }
+    }
+  }
+]

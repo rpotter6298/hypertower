@@ -1,0 +1,44 @@
+[
+  {
+    "_note": "Tritower (img + cd + geom) at the new img backbone. 10 reps — definite test, establishes whether the geom tower adds value over img+cd.",
+    "run_name": "experiments/refuge_v2m_baseline/tritower",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "Tritower + OrthoBridge w=0.1 (best ortho weight from earlier sweep) wrapping Hadamard inner. Bumped to 10 reps after 3-rep showed 0.9059 with tight std — wanted to confirm against plain tritower's 0.9040.",
+    "run_name": "experiments/refuge_v2m_baseline/tritower_ortho_w0.1",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "Tritower + bottleneck (fusion_dim=8) — tests whether the strong img backbone can survive aggressive bottlenecking.",
+    "run_name": "experiments/refuge_v2m_baseline/tritower_bottleneck",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": { "args": { "fusion_dim": 8 } }
+    }
+  }
+]

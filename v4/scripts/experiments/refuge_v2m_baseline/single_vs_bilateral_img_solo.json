@@ -1,0 +1,16 @@
+[
+  {
+    "_note": "Single-eye img-only (eval at img_fuse) under the original refugelike backbone. Goes with img_solo_bilateral_refugelike below to fill the 2x2 grid.",
+    "run_name": "experiments/refuge_v2m_baseline/img_solo_single_refugelike",
+    "reps": 10
+  },
+
+  {
+    "_note": "Single-eye img-only under the new refuge V2-M backbone. Pairs with refuge_v2m_baseline/img_solo (bilateral, 0.8923 ± 0.018 at 10 reps).",
+    "run_name": "experiments/refuge_v2m_baseline/img_solo_single_refuge_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

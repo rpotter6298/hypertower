@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "Image-only (no cd) at the new refuge_efficientnet_v2_m baseline. 10 reps — definite test, establishes how much cd contributes to the ensemble.",
+    "run_name": "experiments/refuge_v2m_baseline/img_solo",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

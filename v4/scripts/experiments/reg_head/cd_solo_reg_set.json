@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "CD tower only, regression. Ablation vs baseline_reg_nt50 to isolate the contribution of clinical data.",
+    "run_name": "experiments/reg_head/cd_solo_reg",
+    "reps": 3
+  }
+]

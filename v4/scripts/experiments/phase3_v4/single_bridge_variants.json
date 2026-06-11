@@ -1,0 +1,27 @@
+[
+  {
+    "_note": "Single-eye img+cd ensemble at refugelike with PairwiseAdditiveBridge at nt (eye-level fusion). For F3 confidence-strip panel expansion.",
+    "run_name": "experiments/phase3_v4/single_bcd_pairwise",
+    "reps": 10,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "Single-eye img+cd ensemble at refugelike with GatedAdditiveBridge at nt.",
+    "run_name": "experiments/phase3_v4/single_bcd_gated",
+    "reps": 10,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "_note": "Single-eye ensemble (img+cd, eval at nt) under the original refugelike backbone. Pairs with tri_v1/baseline_ensemble (bilateral, 0.8958 ± 0.017 at 10 reps) to standardize the v3 single-vs-bilateral comparison.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_single_refugelike",
+    "reps": 10
+  },
+
+  {
+    "_note": "Single-eye ensemble under the new refuge V2-M backbone. Pairs with efficientnet/refuge_efficientnetv2_m (bilateral, 0.9132 ± 0.019 at 10 reps).",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_single_refuge_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

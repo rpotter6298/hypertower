@@ -12,10 +12,11 @@ from torchvision import models, transforms
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-REFUGELIKE_BACKBONE_PATH    = _REPO_ROOT / "models/v2/refuge/refugelike_backbone.pt"
-REFUGE_DENSENET_PATH        = _REPO_ROOT / "models/refuge/classifier/refuge_densenet_backbone.pt"
-REFUGE_EFFICIENT_B0_PATH    = _REPO_ROOT / "models/refuge/classifier/refuge_efficient_b0_backbone.pt"
-REFUGE_EFFICIENT_B7_PATH    = _REPO_ROOT / "models/refuge/classifier/refuge_efficient_b7_backbone.pt"
+REFUGELIKE_BACKBONE_PATH         = _REPO_ROOT / "models/v2/refuge/refugelike_backbone.pt"
+REFUGE_DENSENET_PATH             = _REPO_ROOT / "models/refuge/classifier/refuge_densenet_backbone.pt"
+REFUGE_EFFICIENTNET_B0_PATH      = _REPO_ROOT / "models/refuge/classifier/refuge_efficientnet_b0_backbone.pt"
+REFUGE_EFFICIENTNET_B7_PATH      = _REPO_ROOT / "models/refuge/classifier/refuge_efficientnet_b7_backbone.pt"
+REFUGE_EFFICIENTNET_V2_M_PATH    = _REPO_ROOT / "models/refuge/classifier/refuge_efficientnet_v2_m_backbone.pt"
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,30 @@ BACKBONES: Dict[str, BackboneSpec] = {
         strip=_strip_efficientnet,
         blocks=_blocks_efficientnet,
     ),
+    "efficientnet_b7": BackboneSpec(
+        ctor=models.efficientnet_b7,
+        weights_default=models.EfficientNet_B7_Weights.DEFAULT,
+        strip=_strip_efficientnet,
+        blocks=_blocks_efficientnet,
+    ),
+    "efficientnet_v2_s": BackboneSpec(
+        ctor=models.efficientnet_v2_s,
+        weights_default=models.EfficientNet_V2_S_Weights.DEFAULT,
+        strip=_strip_efficientnet,
+        blocks=_blocks_efficientnet,
+    ),
+    "efficientnet_v2_m": BackboneSpec(
+        ctor=models.efficientnet_v2_m,
+        weights_default=models.EfficientNet_V2_M_Weights.DEFAULT,
+        strip=_strip_efficientnet,
+        blocks=_blocks_efficientnet,
+    ),
+    "efficientnet_v2_l": BackboneSpec(
+        ctor=models.efficientnet_v2_l,
+        weights_default=models.EfficientNet_V2_L_Weights.DEFAULT,
+        strip=_strip_efficientnet,
+        blocks=_blocks_efficientnet,
+    ),
     "resnet18": BackboneSpec(
         ctor=models.resnet18,
         weights_default=models.ResNet18_Weights.DEFAULT,
@@ -157,14 +182,20 @@ BACKBONES: Dict[str, BackboneSpec] = {
         strip=_strip_densenet,
         blocks=_blocks_densenet,
     ),
-    "refuge_efficient_b0": BackboneSpec(
+    "refuge_efficientnet_b0": BackboneSpec(
         ctor=models.efficientnet_b0,
         weights_default=None,
         strip=_strip_efficientnet,
         blocks=_blocks_efficientnet,
     ),
-    "refuge_efficient_b7": BackboneSpec(
+    "refuge_efficientnet_b7": BackboneSpec(
         ctor=models.efficientnet_b7,
+        weights_default=None,
+        strip=_strip_efficientnet,
+        blocks=_blocks_efficientnet,
+    ),
+    "refuge_efficientnet_v2_m": BackboneSpec(
+        ctor=models.efficientnet_v2_m,
         weights_default=None,
         strip=_strip_efficientnet,
         blocks=_blocks_efficientnet,
@@ -172,16 +203,73 @@ BACKBONES: Dict[str, BackboneSpec] = {
 }
 
 
+_TIMM_CONVNEXTV2_VARIANTS = (
+    "convnextv2_atto",
+    "convnextv2_femto",
+    "convnextv2_pico",
+    "convnextv2_nano",
+    "convnextv2_tiny",
+    "convnextv2_base",
+    "convnextv2_large",
+    "convnextv2_huge",
+)
+
+
+def _is_timm_backbone(name: str) -> bool:
+    return name in _TIMM_CONVNEXTV2_VARIANTS
+
+
+def _build_timm_backbone(name: str, freeze_ratio: float) -> tuple[nn.Module, int, list]:
+    """Build a timm-sourced backbone (ConvNeXt-V2 family).
+
+    Uses num_classes=0 + global_pool="avg" so the model returns a pooled
+    (B, num_features) tensor directly — no head to strip. Freezable blocks
+    are [stem, stage_0, stage_1, stage_2, stage_3].
+    """
+    try:
+        import timm
+    except ImportError as e:
+        raise ImportError(
+            f"backbone {name!r} requires the `timm` package "
+            "(pip install timm)"
+        ) from e
+
+    m = timm.create_model(name, pretrained=True, num_classes=0, global_pool="avg")
+    out_dim = int(getattr(m, "num_features", 0))
+    if not out_dim:
+        raise RuntimeError(f"timm model {name!r} did not expose num_features")
+
+    blocks: list[nn.Module] = []
+    if hasattr(m, "stem"):
+        blocks.append(m.stem)
+    if hasattr(m, "stages"):
+        blocks.extend(list(m.stages))
+    if not blocks:
+        raise RuntimeError(
+            f"timm model {name!r} did not expose .stem / .stages — "
+            "extend _build_timm_backbone to support this architecture."
+        )
+
+    fr       = max(0.0, min(1.0, float(freeze_ratio)))
+    n_freeze = int(math.floor(len(blocks) * fr))
+    for b in blocks[:n_freeze]:
+        for p in b.parameters():
+            p.requires_grad = False
+
+    return m, out_dim, blocks
+
+
 def list_names() -> List[str]:
-    return list(BACKBONES.keys())
+    return list(BACKBONES.keys()) + list(_TIMM_CONVNEXTV2_VARIANTS)
 
 
 def load_backbone_weights(key: str, model: nn.Module) -> None:
     paths = {
-        "refugelike":         REFUGELIKE_BACKBONE_PATH,
-        "refuge_densenet":    REFUGE_DENSENET_PATH,
-        "refuge_efficient_b0": REFUGE_EFFICIENT_B0_PATH,
-        "refuge_efficient_b7": REFUGE_EFFICIENT_B7_PATH,
+        "refugelike":               REFUGELIKE_BACKBONE_PATH,
+        "refuge_densenet":          REFUGE_DENSENET_PATH,
+        "refuge_efficientnet_b0":   REFUGE_EFFICIENTNET_B0_PATH,
+        "refuge_efficientnet_b7":   REFUGE_EFFICIENTNET_B7_PATH,
+        "refuge_efficientnet_v2_m": REFUGE_EFFICIENTNET_V2_M_PATH,
     }
     path = paths.get(key)
     if path is None:
@@ -202,6 +290,8 @@ def build_backbone(name: str, freeze_ratio: float = 0.0) -> tuple[nn.Module, int
     freezable units — callers use it to dynamically adjust freeze_ratio later.
     """
     key = (name or "").lower()
+    if _is_timm_backbone(key):
+        return _build_timm_backbone(key, freeze_ratio)
     if key not in BACKBONES:
         raise ValueError(f"Unknown backbone '{name}'. Available: {list_names()}")
 

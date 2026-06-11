@@ -1,0 +1,29 @@
+[
+  {
+    "_note": "EfficientNet-B7 (ImageNet-pretrained, torchvision) vs the refugelike resnet50 img backbone. Otherwise identical to experiments/tri_v1/baseline_ensemble.",
+    "run_name": "experiments/efficientnet/baseline_efficientnet_b7",
+    "reps": 3,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "efficientnet_b7",
+          "freeze_ratio": 0.0
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "Same architecture, freeze the first 40% of B7 blocks (keep low-level ImageNet filters fixed since fundus is out-of-distribution).",
+    "run_name": "experiments/efficientnet/baseline_efficientnet_b7_freeze40",
+    "reps": 3,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "efficientnet_b7",
+          "freeze_ratio": 0.4
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,36 @@
+[
+  {
+    "_note": "F6 V2-M: regression baseline_reg_nt50 at refuge V2-M. Same architecture as reg_head/baseline_reg_nt50 but with the V2-M backbone in place of refugelike.",
+    "run_name": "experiments/v2m_variants/baseline_reg_nt50_v2m",
+    "reps": 10,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 50 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  }
+]

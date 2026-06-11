@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Geometry-vector injection from UNet-derived segmentation, bumped to 10 reps to round out the refugelike geometry panel alongside ensemble_fused/no_geom (0.8979, n=10), ensemble_fused/geom_gt (0.9121, n=10), tri_v1/baseline_tri (0.8932, n=10), and tri_v1/baseline_solo (0.6833, n=10). Use the existing ensemble_fused_geom_unet.json base config which already wires up the EPC geometry_vectors channel.",
+    "run_name": "experiments/phase6_v4/ensemble_geom_vec_unet",
+    "reps": 10
+  }
+]

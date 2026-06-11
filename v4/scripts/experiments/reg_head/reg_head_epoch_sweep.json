@@ -1,0 +1,97 @@
+[
+  {
+    "_note": "baseline_reg at nt=50 (vs default 36). All heads regression on vf_md, label_filter expanded to [0,1,2]. Bumped to 10 reps for final regression-head reporting + 3-bin severity confusion matrix.",
+    "run_name": "experiments/reg_head/baseline_reg_nt50",
+    "reps": 10,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 50 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  },
+
+  {
+    "_note": "baseline_reg at nt=75",
+    "run_name": "experiments/reg_head/baseline_reg_nt75",
+    "reps": 3,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 75 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  },
+
+  {
+    "_note": "baseline_reg at nt=100",
+    "run_name": "experiments/reg_head/baseline_reg_nt100",
+    "reps": 3,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 100 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  }
+]

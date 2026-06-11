@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -148,7 +149,13 @@ def _balanced_sampler(shell: LoaderShell):
 # Fold runner
 # ---------------------------------------------------------------------------
 
-def run_fold(fold: int, splits, cfg: dict, data, num_classes: int, device) -> dict:
+def run_fold(fold: int, splits, cfg: dict, data, num_classes: int, device):
+    """Train + evaluate one fold.
+
+    Returns (fold_result, fold_preds, towers, stage_models). The latter two are
+    handy for opt-in artefact saving (e.g. checkpoint dumps for explainability
+    runs) without forcing the orchestrator to know about every saved tensor.
+    """
     seed_everything(cfg["seed"] + fold * 100)
     split        = splits[fold]
     label_filter = cfg.get("label_filter", None)
@@ -210,7 +217,7 @@ def run_fold(fold: int, splits, cfg: dict, data, num_classes: int, device) -> di
 
         # head stages are handled inside fusion.run
 
-    return fold_result, fold_preds
+    return fold_result, fold_preds, towers, stage_models
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +271,7 @@ def main():
     eval_stage        = cfg.get("eval_stage", "hb")
     save_predictions  = cfg.get("save_predictions", False)
     save_features     = cfg.get("save_features", False)
+    save_checkpoints  = cfg.get("save_checkpoints", False)
     fold_results      = []
     eval_stage_preds  = []   # list[dict] — one per fold, only for eval_stage
     all_phase_preds: dict[str, list[dict]] = {}  # phase → list[dict] across folds
@@ -274,8 +282,21 @@ def main():
         n_train = split.train[group_col].nunique() if group_col else len(split.train)
         print(f"\n── fold {fold+1}/{cfg.get('folds', 5)}  train_groups={n_train} ──",
               flush=True)
-        result, fold_preds = run_fold(fold, splits, cfg, data, num_classes, device)
+        result, fold_preds, towers, stage_models = run_fold(
+            fold, splits, cfg, data, num_classes, device,
+        )
         fold_results.append(result)
+
+        if save_checkpoints:
+            ckpt_dir = out_dir / "checkpoints" / f"fold{fold}"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            for name, mod in towers.items():
+                torch.save(mod.state_dict(), ckpt_dir / f"tower_{name}.pt")
+            for name, mod in stage_models.items():
+                # Skip non-Module entries (defensive); only nn.Modules have state_dict
+                if hasattr(mod, "state_dict"):
+                    torch.save(mod.state_dict(), ckpt_dir / f"stage_{name}.pt")
+            print(f"  Checkpoints saved: {ckpt_dir}", flush=True)
         if save_predictions and eval_stage in fold_preds:
             eval_stage_preds.append(fold_preds[eval_stage])
         if save_features:
@@ -283,26 +304,46 @@ def main():
                 if pdata.get("val_z") is None:
                     continue
                 all_phase_preds.setdefault(ph, []).append(pdata)
+        # Look up the eval stage's primary metric name (set by the stage runner).
+        primary_name = result.get(f"{eval_stage}_val_primary_name", "auc")
+        val_primary  = result.get(f"{eval_stage}_val_{primary_name}",  float("nan"))
+        test_primary = result.get(f"{eval_stage}_test_{primary_name}", float("nan"))
         print(
             f"  fold{fold+1} DONE"
-            f"  val_auc={result.get(f'{eval_stage}_val_auc', float('nan')):.4f}"
-            f"  test_auc={result.get(f'{eval_stage}_test_auc', float('nan')):.4f}",
+            f"  val_{primary_name}={val_primary:.4f}"
+            f"  test_{primary_name}={test_primary:.4f}",
             flush=True,
         )
 
     if fold_results:
-        val_aucs  = [r.get(f"{eval_stage}_val_auc",  float("nan")) for r in fold_results]
-        test_aucs = [r.get(f"{eval_stage}_test_auc", float("nan")) for r in fold_results]
-        val_aucs  = [v for v in val_aucs  if not np.isnan(v)]
-        test_aucs = [v for v in test_aucs if not np.isnan(v)]
+        # Resolve primary metric name from first valid fold result.
+        primary_name = next(
+            (r.get(f"{eval_stage}_val_primary_name", "auc") for r in fold_results
+             if r.get(f"{eval_stage}_val_primary_name") is not None),
+            "auc",
+        )
+        val_primaries  = [r.get(f"{eval_stage}_val_{primary_name}",  float("nan"))
+                          for r in fold_results]
+        test_primaries = [r.get(f"{eval_stage}_test_{primary_name}", float("nan"))
+                          for r in fold_results]
+        val_primaries  = [v for v in val_primaries  if not np.isnan(v)]
+        test_primaries = [v for v in test_primaries if not np.isnan(v)]
         summary = {
-            "run_name":      cfg["run_name"],
-            "eval_stage":    eval_stage,
-            "config":        cfg,
-            "mean_val_auc":  float(np.mean(val_aucs))  if val_aucs  else float("nan"),
-            "std_val_auc":   float(np.std(val_aucs))   if val_aucs  else float("nan"),
-            "mean_test_auc": float(np.mean(test_aucs)) if test_aucs else float("nan"),
-            "std_test_auc":  float(np.std(test_aucs))  if test_aucs else float("nan"),
+            "run_name":         cfg["run_name"],
+            "eval_stage":       eval_stage,
+            "primary_metric":   primary_name,
+            "config":           cfg,
+            # Canonical primary-metric stats
+            f"mean_val_{primary_name}":  float(np.mean(val_primaries))  if val_primaries  else float("nan"),
+            f"std_val_{primary_name}":   float(np.std(val_primaries))   if val_primaries  else float("nan"),
+            f"mean_test_{primary_name}": float(np.mean(test_primaries)) if test_primaries else float("nan"),
+            f"std_test_{primary_name}":  float(np.std(test_primaries))  if test_primaries else float("nan"),
+            # Backward-compat aliases so existing analysis tooling (summarize_run.py,
+            # compare_grid.py) still reads correctly for classification runs.
+            "mean_val_auc":  float(np.mean(val_primaries))  if val_primaries  else float("nan"),
+            "std_val_auc":   float(np.std(val_primaries))   if val_primaries  else float("nan"),
+            "mean_test_auc": float(np.mean(test_primaries)) if test_primaries else float("nan"),
+            "std_test_auc":  float(np.std(test_primaries))  if test_primaries else float("nan"),
             "elapsed_s":     round(time.time() - t0, 1),
             "fold_results":  fold_results,
         }
@@ -310,8 +351,10 @@ def main():
         summary_path = out_dir / "summary.json"
         summary_path.write_text(json.dumps(summary, indent=2))
         print(f"\n{'='*60}", flush=True)
-        print(f"Val  AUC: {summary['mean_val_auc']:.4f} ± {summary['std_val_auc']:.4f}", flush=True)
-        print(f"Test AUC: {summary['mean_test_auc']:.4f} ± {summary['std_test_auc']:.4f}", flush=True)
+        print(f"Val  {primary_name}: {summary[f'mean_val_{primary_name}']:.4f} ± "
+              f"{summary[f'std_val_{primary_name}']:.4f}", flush=True)
+        print(f"Test {primary_name}: {summary[f'mean_test_{primary_name}']:.4f} ± "
+              f"{summary[f'std_test_{primary_name}']:.4f}", flush=True)
         print(f"Saved: {summary_path}", flush=True)
 
         if save_predictions and eval_stage_preds:

@@ -208,10 +208,22 @@ class HTDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         entry  = self.entries[idx]
-        sample = {
+        sample: dict[str, Any] = {
             "label":     torch.tensor(entry.label, dtype=torch.long),
             "entity_id": entry.entity_id,
         }
+        # Any per-entry auxiliary fields the profile attached via meta
+        # (e.g. vf_md for regression heads) flow into the batch dict
+        # alongside `label` and tower inputs.
+        for k, v in entry.meta.items():
+            if k in sample:
+                continue   # don't overwrite primary fields
+            if isinstance(v, torch.Tensor):
+                sample[k] = v
+            elif isinstance(v, (int, float)):
+                sample[k] = torch.tensor(v, dtype=torch.float32)
+            else:
+                sample[k] = v
         for name, tower in self.towers.items():
             sample[name] = tower.get_sample(entry)
         return sample

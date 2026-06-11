@@ -1,0 +1,84 @@
+{
+  "_notes": [
+    "Image tower only, binary classification. Mirrors ensemble_fused architecture",
+    "(eye-level fusion → patient-level hb → head) with the cd tower removed,",
+    "so test AUC is directly comparable to baseline_ensemble."
+  ],
+  "run_name": "v4/img_solo",
+  "num_classes": 2,
+  "label_filter": [0, 1],
+  "split_identity_level": 1,
+  "eval_stage": "hb",
+  "save_predictions": true,
+  "seed": 1234,
+  "folds": 5,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": ["binary"],
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": ["Axial_Length"],
+      "in_memory_cache": true
+    }
+  },
+  "towers": [
+    {
+      "name": "img",
+      "module": "v4.classes.towers.image_tower",
+      "class": "ImageEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone": "refugelike",
+        "freeze_ratio": 0.0,
+        "augment": true
+      }
+    }
+  ],
+  "stages": [
+    {
+      "name": "img_fuse",
+      "type": "fusion",
+      "module": "v4.classes.bridges.mono_bridge",
+      "class": "MonoBridge",
+      "inputs": ["img"],
+      "level": "eye",
+      "epochs": 36,
+      "train_towers": true,
+      "args": { "use_ln": false }
+    },
+    {
+      "name": "img_fuse_head",
+      "type": "head",
+      "input": "img_fuse",
+      "train_with": "img_fuse"
+    },
+    {
+      "name": "hb",
+      "type": "fusion",
+      "module": "v4.classes.bridges.hyperbridge",
+      "class": "HyperBridge",
+      "inputs": { "a": "img_fuse", "b": "img_fuse" },
+      "level": "patient",
+      "epochs": 10,
+      "args": { "hidden_dim": 256, "mode": "embedding_mlp" }
+    },
+    {
+      "name": "hb_head",
+      "type": "head",
+      "input": "hb",
+      "train_with": "hb",
+      "args": { "dropout": 0.3 }
+    }
+  ],
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 8,
+    "tune_binary_threshold": true
+  }
+}

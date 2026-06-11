@@ -1,0 +1,28 @@
+[
+  {
+    "_note": "refugelike (resnet50 + REFUGE fundus pretraining), freeze stem only (1/5 blocks). Tests whether even minimal anchoring helps stability.",
+    "run_name": "experiments/freeze_sweep/refugelike_freeze20",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.2 } }
+    }
+  },
+
+  {
+    "_note": "Freeze stem + layer1 (2/5 blocks). Keeps low-level conv filters fixed, lets layers 2-4 + fc adapt. Bumped to 10 reps to confirm the 0.9105 result vs the 10-rep baseline_ensemble at 0.8958.",
+    "run_name": "experiments/freeze_sweep/refugelike_freeze40",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.4 } }
+    }
+  },
+
+  {
+    "_note": "Freeze stem + layer1 + layer2 (3/5 blocks). Only the deep semantic layers adapt — most aggressive practical setting before model loses capacity.",
+    "run_name": "experiments/freeze_sweep/refugelike_freeze60",
+    "reps": 3,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.6 } }
+    }
+  }
+]

@@ -155,7 +155,12 @@ def _apply_iop_and_drop_md(
     df["IOP_corr"] = [
         _correct_iop(r, p) for r, p in zip(df["IOP_raw"].values, pachy.values)
     ]
-    drop = [c for c in ("Pneumatic", "Perkins", "VF_MD") if c in df.columns]
+    # Drop the raw IOP source columns (Pneumatic, Perkins) since their info
+    # is already absorbed into IOP_corr.  VF_MD is intentionally NOT dropped
+    # here — it stays available as a target for auxiliary/regression tasks
+    # (PapilaBundle exposes it via .vf_md_target / .get_vf_md()).  It must
+    # however be added to `exclude_cols` so it is never used as a feature.
+    drop = [c for c in ("Pneumatic", "Perkins") if c in df.columns]
     if drop_raw:
         drop.append("IOP_raw")
     if drop:
@@ -247,6 +252,39 @@ class ClinicalDataView:
         n_scalar = len(self.scalar_cols)
         n_cat    = sum(len(m) for m in self.cat_maps.values())
         return n_scalar + n_cat + n_scalar  # scalars + one-hots + missing flags
+
+    # ── Optional explainability hooks ────────────────────────────────────────
+    #
+    # feature_names + feature_groups describe how the encoded feature_dim
+    # vector maps back to the original column space. They're consumed by
+    # v4.classes.accessory.explainability.permutation_importance via the
+    # caller (F8); profiles without these methods skip per-column importance.
+
+    @cached_property
+    def feature_names(self) -> list[str]:
+        """Human-readable name for each original column (used as group label)."""
+        return list(self.scalar_cols) + list(self.cat_cols)
+
+    @cached_property
+    def feature_groups(self) -> list[list[int]]:
+        """Encoded-vector indices grouped by original column.
+
+        Each entry is the set of model-input dimensions that encode one
+        conceptual feature: a scalar groups its value + missing-flag dim,
+        a categorical groups all of its one-hot dims.
+        Order matches ``feature_names``.
+        """
+        n_scalar = len(self.scalar_cols)
+        n_cat_total = sum(len(m) for m in self.cat_maps.values())
+        groups: list[list[int]] = []
+        for i in range(n_scalar):
+            groups.append([i, n_scalar + n_cat_total + i])
+        offset = n_scalar
+        for col in self.cat_cols:
+            k = len(self.cat_maps[col])
+            groups.append(list(range(offset, offset + k)))
+            offset += k
+        return groups
 
     def vectorize_entity(self, *ids) -> np.ndarray:
         """Return the feature vector for an entity identified by positional ids.
@@ -442,6 +480,104 @@ class ImageDataView:
         from v4.classes.profiles.fundus_images import build_seg_map_loader as _build
         return _build(source, **self._resolve_paths(kwargs))
 
+    # ── Optional explainability hooks ────────────────────────────────────────
+    #
+    # These methods are consumed by v4.classes.accessory.explainability via
+    # getattr — they're optional on the data view, so a different profile
+    # without disc annotations can simply not define them and GradCAM/overlay
+    # will still work (region-of-interest analysis is skipped).
+    #
+    # Eval-crop convention: PAPILA training resizes the short side to 256
+    # then center-crops 224×224. The methods below mirror that so the disc
+    # mask and the display image stay aligned with what the image tower sees.
+
+    _EVAL_RESIZE = 256
+    _EVAL_CROP   = 224
+    _DEFAULT_CONTOUR_DIR = "Papila/ExpertsSegmentations/Contours"
+
+    def eval_image_pil(self, *ids) -> Image.Image:
+        """Load image and apply the 256-resize + 224-center-crop used at eval time."""
+        from torchvision.transforms import functional as TF
+        from torchvision.transforms import InterpolationMode
+        pil = self.load_image(*ids).convert("RGB")
+        pil = TF.resize(pil, self._EVAL_RESIZE, interpolation=InterpolationMode.BILINEAR)
+        return TF.center_crop(pil, [self._EVAL_CROP, self._EVAL_CROP])
+
+    def build_roi_mask(
+        self,
+        *ids,
+        target_h: int,
+        target_w: int,
+        expert:   int = 1,
+        contour_dir: str | None = None,
+    ) -> np.ndarray | None:
+        """Rasterize the expert disc contour for (pid, eye), aligned to the eval crop.
+
+        Returns a binary ndarray of shape (target_h, target_w), or None if no
+        contour file exists for this eye / the file is malformed.
+
+        Alignment: the contour polygon is rasterized at the original image
+        resolution, then resized + center-cropped to match the same eval
+        transform the image tower uses, then resized to (target_h, target_w).
+        """
+        from PIL import ImageDraw
+        from torchvision.transforms import functional as TF
+        from torchvision.transforms import InterpolationMode
+
+        if len(ids) < 2:
+            raise TypeError(
+                "build_roi_mask requires (patient_id, eye) — got %r" % (ids,)
+            )
+        pid, eye = int(ids[0]), str(ids[1])
+
+        repo_root = Path(__file__).resolve().parents[3]
+        dir_ = Path(contour_dir or self._DEFAULT_CONTOUR_DIR)
+        if not dir_.is_absolute():
+            dir_ = repo_root / dir_
+        contour_path = dir_ / f"RET{pid:03d}{eye}_disc_exp{expert}.txt"
+        if not contour_path.exists():
+            return None
+        try:
+            arr = np.loadtxt(str(contour_path), dtype=np.float32)
+        except Exception:
+            return None
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 2)
+        if arr.shape[0] < 3:
+            return None
+
+        # Original image size for polygon canvas
+        try:
+            with Image.open(self.get_image_path(*ids)) as im:
+                orig_w, orig_h = im.size
+        except Exception:
+            return None
+
+        canvas = Image.new("L", (orig_w, orig_h), 0)
+        ImageDraw.Draw(canvas).polygon([tuple(pt) for pt in arr[:, :2]], fill=1)
+
+        # Match the eval transform exactly (resize → center-crop)
+        canvas = TF.resize(canvas, self._EVAL_RESIZE, interpolation=InterpolationMode.NEAREST)
+        canvas = TF.center_crop(canvas, [self._EVAL_CROP, self._EVAL_CROP])
+
+        if (target_h, target_w) != (self._EVAL_CROP, self._EVAL_CROP):
+            canvas = canvas.resize((target_w, target_h), Image.NEAREST)
+        return np.array(canvas, dtype=bool)
+
+    def orient_for_display(self, image, side: str):
+        """Mirror OS to align its nasal–temporal axis with the OD convention.
+
+        Accepts a PIL.Image or a numpy array. OD is passed through unchanged.
+        """
+        if side != self.SIDE_B:  # SIDE_A == OD, unchanged
+            return image
+        if isinstance(image, Image.Image):
+            from PIL import ImageOps
+            return ImageOps.mirror(image)
+        if isinstance(image, np.ndarray):
+            return np.ascontiguousarray(np.fliplr(image))
+        raise TypeError(f"orient_for_display: unsupported type {type(image).__name__}")
+
 
 # ---------------------------------------------------------------------------
 # PapilaBundle — the v4 DataBundle returned by build_data
@@ -457,10 +593,11 @@ class PapilaBundle:
 
     def __init__(
         self,
-        bundle:       DataBundle,
-        image_dir:    str,
-        preprocessor: Callable | None = None,
-        image_cache:  CachedImageLoader | None = None,
+        bundle:        DataBundle,
+        image_dir:     str,
+        preprocessor:  Callable | None = None,
+        image_cache:   CachedImageLoader | None = None,
+        vf_md_targets: dict[tuple, float] | None = None,
     ):
         self._bundle    = bundle
         self._image_dir = image_dir
@@ -484,6 +621,25 @@ class PapilaBundle:
             preprocessor=preprocessor,
             image_cache=image_cache,
         )
+
+        # ── VF_MD target table (for regression / auxiliary heads) ────────────
+        # Provided by build_data — captured from raw frames before the master
+        # df dropped VF_MD via exclude_cols.  Keys are (pid, eyeID), values are
+        # raw floats (NaN where the measurement was missing).
+        self._vf_md_raw: dict[tuple, float] = dict(vf_md_targets or {})
+
+        # ── Imputation distribution + pre-sampled imputed table ──────────────
+        # Strategy: in PAPILA, the few healthy patients with measured MD are
+        # likely biased toward being slightly worse than the typical healthy
+        # eye (the test is usually administered when there's some suspicion).
+        # We correct for this by centering the imputation distribution on the
+        # TOP QUARTILE mean of the measured-healthy MD values (i.e. the
+        # healthiest of the measured healthies), while using the std of the
+        # full measured-healthy sample.  Missing values are then drawn from
+        # N(top_q_mean, std²) once at bundle construction, with a fixed seed,
+        # so the same patient always gets the same imputed value.
+        self._impute_mean, self._impute_std = self._compute_impute_params()
+        self._vf_md_imputed: dict[tuple, float] = self._sample_imputations(seed=42)
 
     # ── Entity-id metadata (for orchestrator logging) ────────────────────────
 
@@ -524,6 +680,76 @@ class PapilaBundle:
             pid = int(row[pc])
             eye = str(row.get("eyeID", "OD"))
             out.append((pid, eye, self.image.get_image_path(pid, eye)))
+        return out
+
+    # ── VF_MD target accessor (for regression / auxiliary heads) ─────────────
+
+    def get_vf_md(self, pid: int, eye: str, *, impute: bool = True) -> float:
+        """Return VF_MD for one eye.
+
+        impute=True  → look up the precomputed imputed value (raw if measured,
+                       distribution sample if missing).  This is what training
+                       should use — deterministic, fixed-seed, same value every
+                       call across the run.
+        impute=False → return the raw value (NaN if unmeasured).
+        """
+        key = (int(pid), str(eye))
+        if impute:
+            return self._vf_md_imputed.get(key, self._impute_mean)
+        return self._vf_md_raw.get(key, float("nan"))
+
+    @property
+    def has_vf_md(self) -> bool:
+        return bool(self._vf_md_raw)
+
+    @property
+    def impute_params(self) -> dict:
+        """Inspection: which mean/std were used to draw imputations."""
+        return {"mean": self._impute_mean, "std": self._impute_std}
+
+    # ── Internal helpers for imputation -------------------------------------
+
+    def _compute_impute_params(self) -> tuple[float, float]:
+        """Mean = top-quartile mean of measured healthy MDs; std = std of all.
+
+        Falls back to (0.0, 0.0) if there are too few measured-healthy samples
+        to fit a sensible distribution.
+        """
+        # Build (pid, eye) → diagnosis from the underlying bundle df.
+        diag_lookup: dict[tuple, int] = {}
+        label_col = self._bundle.label_col
+        pc        = self._bundle.patient_col
+        if label_col in self._bundle.df.columns:
+            for _, row in self._bundle.df.iterrows():
+                key = (int(row[pc]), str(row.get("eyeID", "OD")))
+                diag_lookup[key] = int(row[label_col])
+
+        measured_healthy = [
+            v for key, v in self._vf_md_raw.items()
+            if v == v and diag_lookup.get(key, -1) == 0  # not NaN and healthy
+        ]
+        if len(measured_healthy) < 4:
+            return 0.0, 0.0
+
+        arr = np.asarray(measured_healthy, dtype=np.float64)
+        q3  = float(np.percentile(arr, 75))
+        top = arr[arr >= q3]
+        mean = float(top.mean()) if top.size else float(arr.mean())
+        std  = float(arr.std(ddof=1)) if arr.size > 1 else 0.0
+        return mean, std
+
+    def _sample_imputations(self, *, seed: int) -> dict[tuple, float]:
+        """One-shot pre-sample: every (pid, eye) gets a fixed value for the run."""
+        rng = np.random.default_rng(seed)
+        out: dict[tuple, float] = {}
+        for key in sorted(self._vf_md_raw.keys()):
+            v = self._vf_md_raw[key]
+            if v == v:  # measured
+                out[key] = float(v)
+            elif self._impute_std > 0:
+                out[key] = float(rng.normal(self._impute_mean, self._impute_std))
+            else:
+                out[key] = self._impute_mean
         return out
 
     # ── Backward-compat delegates ────────────────────────────────────────────
@@ -587,7 +813,8 @@ class PapilaBundle:
                 pid   = int(row[pc])
                 label = int(row[lc])
                 side  = str(row.get("eyeID", "OD"))
-                entries.append(ShellEntry(entity_id=(pid, side), label=label))
+                meta  = {"vf_md": self.get_vf_md(pid, side)} if self.has_vf_md else {}
+                entries.append(ShellEntry(entity_id=(pid, side), label=label, meta=meta))
 
         elif level == "patient":
             for pid, grp in df.groupby(pc):
@@ -597,7 +824,13 @@ class PapilaBundle:
                         continue
                 label_mode = grp[lc].mode()
                 label = int(label_mode.iloc[0]) if not label_mode.empty else int(grp[lc].iloc[0])
-                entries.append(ShellEntry(entity_id=(int(pid),), label=label))
+                meta = {}
+                if self.has_vf_md:
+                    # Patient-level target: mean of the two eyes' imputed MDs
+                    meta["vf_md"] = 0.5 * (
+                        self.get_vf_md(int(pid), "OD") + self.get_vf_md(int(pid), "OS")
+                    )
+                entries.append(ShellEntry(entity_id=(int(pid),), label=label, meta=meta))
 
         else:
             raise ValueError(f"Unknown shell level: {level!r}. Choose 'eye' or 'patient'.")
@@ -659,6 +892,11 @@ def build_data(args: dict) -> PapilaBundle:
     random_seed    = int(args.get("random_seed",  42))
     use_cache      = bool(args.get("in_memory_cache", False))
 
+    # Always exclude VF_MD from feature vectorization — it's a target/label
+    # column (used by regression heads), never an input.
+    if "VF_MD" not in exclude_cols:
+        exclude_cols = exclude_cols + ["VF_MD"]
+
     effective_cat = [c for c in cat_cols if c not in exclude_cols]
 
     bundle = DataBundle(
@@ -694,6 +932,20 @@ def build_data(args: dict) -> PapilaBundle:
             bundle.frames[i], converter=converter, drop_raw=iop_drop_raw
         )
 
+    # Capture VF_MD per (pid, eyeID) from the raw frames BEFORE the master df
+    # is refreshed (which would drop VF_MD via exclude_cols).
+    vf_md_targets: dict[tuple, float] = {}
+    for frame in bundle.frames:
+        if "VF_MD" not in frame.columns:
+            continue
+        for _, row in frame.iterrows():
+            pid = int(row["Patient ID"])
+            eye = str(row.get("eyeID", "OD"))
+            v   = row["VF_MD"]
+            vf_md_targets[(pid, eye)] = (
+                float(v) if not pd.isna(v) else float("nan")
+            )
+
     bundle._refresh_master_df(exclude_cols=exclude_cols or None)
     bundle._infer_or_validate_feature_types(exclude_cols=exclude_cols or None)
     bundle._compute_numeric_stats()
@@ -706,4 +958,5 @@ def build_data(args: dict) -> PapilaBundle:
         bundle=bundle,
         image_dir=image_dir,
         image_cache=image_cache,
+        vf_md_targets=vf_md_targets,
     )

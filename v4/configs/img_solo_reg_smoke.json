@@ -1,0 +1,115 @@
+{
+  "_notes": [
+    "Smoke test: convnextv2_tiny backbone, single fold, few epochs.",
+    "Goal is to verify the new ConvNeXt-V2 path works end-to-end (load weights,",
+    "forward, backward, save summary). Not for measuring quality."
+  ],
+  "run_name": "smoke/convnextv2_tiny",
+  "num_classes": 2,
+  "label_filter": [
+    0,
+    1,
+    2
+  ],
+  "split_identity_level": 1,
+  "eval_stage": "hb",
+  "save_predictions": false,
+  "seed": 1234,
+  "folds": 3,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": [
+    "binary"
+  ],
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": [
+        "Axial_Length"
+      ],
+      "in_memory_cache": true
+    }
+  },
+  "towers": [
+    {
+      "name": "img",
+      "module": "v4.classes.towers.image_tower",
+      "class": "ImageEncoder",
+      "data_source": "image",
+      "args": {
+        "backbone": "convnextv2_tiny",
+        "freeze_ratio": 0.6,
+        "augment": true
+      }
+    }
+  ],
+  "stages": [
+    {
+      "name": "img_fuse",
+      "type": "fusion",
+      "module": "v4.classes.bridges.mono_bridge",
+      "class": "MonoBridge",
+      "inputs": [
+        "img"
+      ],
+      "level": "eye",
+      "epochs": 2,
+      "train_towers": true,
+      "args": {
+        "use_ln": false
+      }
+    },
+    {
+      "name": "img_fuse_head",
+      "type": "head",
+      "input": "img_fuse",
+      "train_with": "img_fuse",
+      "module": "v4.classes.heads.regression",
+      "class": "RegressionHead",
+      "args": {
+        "dropout": 0.3,
+        "target_key": "vf_md",
+        "loss": "mse"
+      }
+    },
+    {
+      "name": "hb",
+      "type": "fusion",
+      "module": "v4.classes.bridges.hyperbridge",
+      "class": "HyperBridge",
+      "inputs": {
+        "a": "img_fuse",
+        "b": "img_fuse"
+      },
+      "level": "patient",
+      "epochs": 2,
+      "args": {
+        "hidden_dim": 256,
+        "mode": "embedding_mlp"
+      }
+    },
+    {
+      "name": "hb_head",
+      "type": "head",
+      "input": "hb",
+      "train_with": "hb",
+      "module": "v4.classes.heads.regression",
+      "class": "RegressionHead",
+      "args": {
+        "dropout": 0.3,
+        "target_key": "vf_md",
+        "loss": "mse"
+      }
+    }
+  ],
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 8,
+    "tune_binary_threshold": true
+  }
+}

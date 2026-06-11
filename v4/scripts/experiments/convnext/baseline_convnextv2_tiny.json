@@ -1,0 +1,15 @@
+[
+  {
+    "_note": "ConvNeXt-V2-Tiny vs the resnet50/refugelike img backbone. Otherwise identical to experiments/tri_v1/baseline_ensemble — same ensemble_fused base, binary classification, hb eval.",
+    "run_name": "experiments/convnext/baseline_convnextv2_tiny",
+    "reps": 10,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "convnextv2_tiny",
+          "freeze_ratio": 0.0
+        }
+      }
+    }
+  }
+]

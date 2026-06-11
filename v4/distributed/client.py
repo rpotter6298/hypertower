@@ -292,9 +292,17 @@ def _run_job(job: JobSpec, server: _Server,
     proc.wait()
     tailer.join(timeout=5)
     heartbeat.join(timeout=5)
-    log_file.unlink(missing_ok=True)
 
     success = proc.returncode == 0
+    if success:
+        log_file.unlink(missing_ok=True)
+    else:
+        failed_path = log_file.with_suffix(".failed.log")
+        try:
+            log_file.replace(failed_path)
+            print(f"[client] preserved failure log at {failed_path}", flush=True)
+        except Exception:
+            pass
 
     if not success:
         try:

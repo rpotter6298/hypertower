@@ -1,0 +1,37 @@
+[
+  {
+    "_note": "PAPILA paper backbone replication — VGG16, single-eye img-only, ImageNet-pretrained (no fundus pretraining). For Figure 2 anchor row.",
+    "run_name": "experiments/phase2_v4/papila_backbones/vgg16",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "vgg16", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "DenseNet121 ImageNet-pretrained, no fundus.",
+    "run_name": "experiments/phase2_v4/papila_backbones/densenet121",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "densenet121", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "MobileNetV2 ImageNet-pretrained, no fundus.",
+    "run_name": "experiments/phase2_v4/papila_backbones/mobilenet_v2",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "mobilenet_v2", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "InceptionV3 ImageNet-pretrained, no fundus. (Note: 299x299 native; pipeline uses 224 — note in figure caption.)",
+    "run_name": "experiments/phase2_v4/papila_backbones/inception_v3",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "inception_v3", "freeze_ratio": 0.0 } }
+    }
+  }
+]

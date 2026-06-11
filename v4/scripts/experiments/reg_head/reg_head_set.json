@@ -1,0 +1,116 @@
+[
+  {
+    "_note": "1) Baseline classification — sanity check that the runner refactor didn't break anything. Should match baseline_ensemble at 0.896.",
+    "run_name": "experiments/reg_head/baseline_class",
+    "reps": 3
+  },
+
+  {
+    "_note": "2) Same architecture as baseline, but all heads (img_aux, cd_aux, nt_head, hb_head) are regression heads targeting vf_md. label_filter expanded to include suspect patients (label=2) since regression handles continuous targets naturally.",
+    "run_name": "experiments/reg_head/baseline_reg",
+    "reps": 3,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  },
+
+  {
+    "_note": "3) OrthoBridge (w=0.1) wrapping Hadamard inner + regression heads",
+    "run_name": "experiments/reg_head/ortho_reg",
+    "reps": 3,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  },
+
+  {
+    "_note": "4) PairwiseAdditiveBridge + regression heads",
+    "run_name": "experiments/reg_head/pairwise_reg",
+    "reps": 3,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  }
+]

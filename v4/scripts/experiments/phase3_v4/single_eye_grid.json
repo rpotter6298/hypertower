@@ -1,0 +1,39 @@
+[
+  {
+    "_note": "Single-eye + all_losses + Hadamard FusionBridge. Pairs with the in-flight ensemble_single_refugelike (single+BCD+Hadamard) to isolate the BCD-vs-all-losses effect. v3 phase 3 originally showed BCD generalizes better; this re-establishes it in v4.",
+    "run_name": "experiments/phase3_v4/single_all_losses_hadamard",
+    "reps": 10,
+    "overrides": {
+      "training": { "tower_loss_mode": "all_losses" }
+    }
+  },
+
+  {
+    "_note": "Single-eye + BCD + ConcatBridge. Pairs with in-flight baseline (single+BCD+Hadamard) to isolate the bridge effect. Justifies why we use FusionBridge (Hadamard) as default.",
+    "run_name": "experiments/phase3_v4/single_bcd_concat",
+    "reps": 10,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "Single-eye + all_losses + ConcatBridge. Fourth cell of the BCD-vs-all-losses × Hadamard-vs-Concat 2x2.",
+    "run_name": "experiments/phase3_v4/single_all_losses_concat",
+    "reps": 10,
+    "overrides": {
+      "training": { "tower_loss_mode": "all_losses" }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

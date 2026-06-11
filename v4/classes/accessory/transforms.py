@@ -6,7 +6,7 @@ from typing import Tuple
 
 from torchvision import transforms
 
-from v4.classes.accessory.backbones import BACKBONES
+from v4.classes.accessory.backbones import BACKBONES, _is_timm_backbone
 
 IMAGENET_MEAN: Tuple[float, float, float] = (0.485, 0.456, 0.406)
 IMAGENET_STD:  Tuple[float, float, float] = (0.229, 0.224, 0.225)
@@ -79,6 +79,11 @@ class ImageTransformConfig:
 def backbone_transform_config(backbone_name: str, augment: bool = True) -> ImageTransformConfig:
     """Build an ImageTransformConfig using the backbone's default normalisation stats."""
     key = (backbone_name or "").lower()
+    if _is_timm_backbone(key):
+        # ConvNeXt-V2 and other timm models we currently expose are all
+        # pretrained with standard ImageNet stats at 224×224.
+        return ImageTransformConfig(crop_size=224, mean=IMAGENET_MEAN,
+                                    std=IMAGENET_STD, augment=augment)
     if key not in BACKBONES:
         raise ValueError(f"Unknown backbone '{backbone_name}'.")
     spec = BACKBONES[key]

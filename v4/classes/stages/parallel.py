@@ -16,6 +16,7 @@ from v4.classes.dataset import LoaderShell, to_label_tensor
 from v4.classes.metrics import score_arrays, compute_extended_metrics, tune_binary_threshold
 from v4.classes.stages.helpers import (
     class_weights_from_shell, get_out_dim, resolve_input_dims, phase_for_epoch,
+    head_compute_loss, head_to_probs, head_score, head_target_key,
 )
 from v4.classes.stages.fusion import collect_probs
 
@@ -120,18 +121,31 @@ def _parallel_warm(
                     continue
                 y_t    = to_label_tensor(y, device)
                 logits = ctx["probe"](towers[tower_name](x.to(device)))
-                loss   = F.cross_entropy(logits, y_t, weight=ctx["class_weights"])
+                loss   = head_compute_loss(ctx["probe"], logits, batch, y_t,
+                                           class_weights=ctx["class_weights"])
                 ctx["opt"].zero_grad(); loss.backward(); ctx["opt"].step()
                 total_loss    += loss.item() * len(y_t)
-                total_correct += int((logits.argmax(1) == y_t).sum())
+                if logits.dim() >= 2:
+                    total_correct += int((logits.argmax(1) == y_t).sum())
+                    is_class = True
+                else:
+                    is_class = False
                 total_n       += len(y_t)
             if total_n:
-                print(
-                    f"  fold{fold+1} [warm/{tower_name}]"
-                    f" ep{epoch+1:03d}/{ctx['n_epochs']}"
-                    f"  loss={total_loss/total_n:.4f}  acc={total_correct/total_n:.3f}",
-                    flush=True,
-                )
+                if is_class:
+                    print(
+                        f"  fold{fold+1} [warm/{tower_name}]"
+                        f" ep{epoch+1:03d}/{ctx['n_epochs']}"
+                        f"  loss={total_loss/total_n:.4f}  acc={total_correct/total_n:.3f}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  fold{fold+1} [warm/{tower_name}]"
+                        f" ep{epoch+1:03d}/{ctx['n_epochs']}"
+                        f"  loss={total_loss/total_n:.4f}",
+                        flush=True,
+                    )
 
     for t in towers.values():
         for p in t.parameters():
@@ -153,7 +167,10 @@ def _parallel_fusion(
 ):
     nan      = float("nan")
     bs       = cfg["training"]["batch_size"]
-    bcd_prob = cfg["training"].get("bcd_prob", 0.5)
+    bcd_prob        = cfg["training"].get("bcd_prob", 0.5)
+    tower_loss_mode = cfg["training"].get("tower_loss_mode", "bcd")
+    if tower_loss_mode not in ("bcd", "all_losses"):
+        raise ValueError(f"tower_loss_mode must be 'bcd' or 'all_losses'; got {tower_loss_mode!r}")
 
     # Freeze all prior stage models once, before building any bridges.
     for m in stage_models.values():
@@ -302,10 +319,14 @@ def _parallel_fusion(
 
                 if phase == "fused_warmup":
                     logits = head_logits.get(ctx["primary_hs_cfg"]["name"])
+                    chosen_head = ctx["head_models"].get(ctx["primary_hs_cfg"]["name"])
                 elif phase == "tower_warmup" and ctx["bcd_head_cfgs"]:
-                    losses = [F.cross_entropy(head_logits[hs["name"]], y_t,
-                                              weight=ctx["class_weights"])
-                              for hs in ctx["bcd_head_cfgs"] if hs["name"] in head_logits]
+                    losses = [
+                        head_compute_loss(ctx["head_models"][hs["name"]],
+                                          head_logits[hs["name"]], batch, y_t,
+                                          class_weights=ctx["class_weights"])
+                        for hs in ctx["bcd_head_cfgs"] if hs["name"] in head_logits
+                    ]
                     if not losses:
                         continue
                     loss = sum(losses) / len(losses)
@@ -315,19 +336,40 @@ def _parallel_fusion(
                     total_loss += loss.item() * len(y_t)
                     total_n    += len(y_t)
                     continue
+                elif tower_loss_mode == "all_losses" and ctx["bcd_head_cfgs"]:
+                    all_head_names = ([ctx["primary_hs_cfg"]["name"]]
+                                      + [hs["name"] for hs in ctx["bcd_head_cfgs"]])
+                    losses = [
+                        head_compute_loss(ctx["head_models"][n], head_logits[n],
+                                          batch, y_t, class_weights=ctx["class_weights"])
+                        for n in all_head_names if n in head_logits
+                    ]
+                    if not losses:
+                        continue
+                    loss = sum(losses)
+                    if hasattr(bridge, "modify_loss"):
+                        loss = bridge.modify_loss(loss)
+                    ctx["opt"].zero_grad(); loss.backward(); ctx["opt"].step()
+                    total_loss += loss.item() * len(y_t)
+                    total_n    += len(y_t)
+                    continue
                 else:
                     if ctx["bcd_head_cfgs"] and _random() < bcd_prob:
-                        logits = head_logits.get(choice(ctx["bcd_head_cfgs"])["name"])
+                        chosen_hs = choice(ctx["bcd_head_cfgs"])
                     else:
-                        logits = head_logits.get(ctx["primary_hs_cfg"]["name"])
+                        chosen_hs = ctx["primary_hs_cfg"]
+                    logits      = head_logits.get(chosen_hs["name"])
+                    chosen_head = ctx["head_models"].get(chosen_hs["name"])
 
                 if logits is None:
                     continue
-                loss = F.cross_entropy(logits, y_t, weight=ctx["class_weights"])
+                loss = head_compute_loss(chosen_head, logits, batch, y_t,
+                                         class_weights=ctx["class_weights"])
                 if hasattr(bridge, "modify_loss"):
                     loss = bridge.modify_loss(loss)
                 ctx["opt"].zero_grad(); loss.backward(); ctx["opt"].step()
-                total_correct += int((logits.argmax(1) == y_t).sum())
+                if logits.dim() >= 2:
+                    total_correct += int((logits.argmax(1) == y_t).sum())
                 total_loss    += loss.item() * len(y_t)
                 total_n       += len(y_t)
 
@@ -337,12 +379,22 @@ def _parallel_fusion(
             y_v, p_v, _, _ = collect_probs(bridge, ctx["primary_head"], ctx["sc"], towers,
                                            stage_models, cfg_stages, ctx["val_loader"],
                                            device, num_classes)
-            _, val_auc, _ = score_arrays(y_v, p_v, num_classes) if y_v.size else (nan, nan, nan)
-            print(
-                f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{ctx['epochs']} [{phase:14s}]"
-                f"  loss={tr_loss:.4f}  acc={tr_acc:.3f}  val_auc={val_auc:.4f}",
-                flush=True,
-            )
+            epoch_scores = head_score(ctx["primary_head"], y_v, p_v, num_classes)
+            val_metric   = epoch_scores.get("primary", nan)
+            metric_name  = epoch_scores.get("primary_name", "auc")
+            is_class     = not hasattr(ctx["primary_head"], "target_key")
+            if is_class:
+                print(
+                    f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{ctx['epochs']} [{phase:14s}]"
+                    f"  loss={tr_loss:.4f}  acc={tr_acc:.3f}  val_{metric_name}={val_metric:.4f}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{ctx['epochs']} [{phase:14s}]"
+                    f"  loss={tr_loss:.4f}  val_{metric_name}={val_metric:.4f}",
+                    flush=True,
+                )
 
     # ── Final eval + collect results ──────────────────────────────────────────
     updated    = dict(stage_models)
@@ -360,36 +412,37 @@ def _parallel_fusion(
         y_val, p_val, ids_val, z_val = collect_probs(bridge, primary_head, ctx["sc"], towers,
                                                       stage_models, cfg_stages, ctx["val_loader"],
                                                       device, num_classes)
-        val_acc, val_auc, val_n = (score_arrays(y_val, p_val, num_classes)
-                                   if y_val.size else (nan, nan, nan))
-        ext = compute_extended_metrics(y_val, p_val, num_classes) if y_val.size else {}
+        val_scores = head_score(primary_head, y_val, p_val, num_classes)
 
         val_threshold = 0.5
         if (cfg["training"].get("tune_binary_threshold")
-                and num_classes == 2 and y_val.size >= 2):
+                and num_classes == 2 and y_val.size >= 2
+                and p_val.ndim == 2 and p_val.shape[1] == 2):
             val_threshold = tune_binary_threshold(y_val, p_val[:, 1])
 
         y_te = p_te = ids_te = z_te = None
-        test_auc = test_acc = test_n = nan
+        test_scores: dict = {}
         if ctx["test_loader"] is not None:
             y_te, p_te, ids_te, z_te = collect_probs(bridge, primary_head, ctx["sc"], towers,
                                                       stage_models, cfg_stages, ctx["test_loader"],
                                                       device, num_classes)
-            test_acc, test_auc, test_n = (score_arrays(y_te, p_te, num_classes)
-                                          if y_te.size else (nan, nan, nan))
+            test_scores = head_score(primary_head, y_te, p_te, num_classes)
 
-        all_metrics.update({
-            f"{name}_val_auc":       val_auc,
-            f"{name}_val_acc":       val_acc,
-            f"{name}_val_n":         val_n,
-            f"{name}_val_kappa":     ext.get("kappa", nan),
-            f"{name}_val_mcc":       ext.get("mcc", nan),
-            f"{name}_val_f1":        ext.get("macro_f1", nan),
-            f"{name}_val_threshold": val_threshold,
-            f"{name}_test_auc":      test_auc,
-            f"{name}_test_acc":      test_acc,
-            f"{name}_test_n":        test_n,
-        })
+        per_stage_metrics: dict = {f"{name}_val_threshold": val_threshold}
+        for k, v in val_scores.items():
+            if k == "primary_name":
+                continue
+            if isinstance(v, (int, float)):
+                per_stage_metrics[f"{name}_val_{k}"] = float(v)
+        per_stage_metrics[f"{name}_val_primary_name"] = val_scores.get("primary_name", "auc")
+        for k, v in test_scores.items():
+            if k == "primary_name":
+                continue
+            if isinstance(v, (int, float)):
+                per_stage_metrics[f"{name}_test_{k}"] = float(v)
+        per_stage_metrics[f"{name}_test_primary_name"] = test_scores.get(
+            "primary_name", per_stage_metrics[f"{name}_val_primary_name"])
+        all_metrics.update(per_stage_metrics)
         all_preds[name] = {
             "val_y": y_val, "val_p": p_val, "val_ids": ids_val, "val_z": z_val,
             "test_y": y_te, "test_p": p_te, "test_ids": ids_te, "test_z": z_te,

@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "10-rep checkpointed run of the production bilateral img+cd ensemble at refuge_efficientnet_v2_m. Per-fold tower and stage_models state_dicts saved under each rep's checkpoints/foldN/ directory. Used for F8 explainability — reconstructing per-tower predictions at the nt (eye) and hb (patient) levels so we can compare img-tower-only, cd-tower-only, eye-fusion, and patient-fusion outputs.",
+    "run_name": "experiments/explainability/ensemble_v2m_ckpt",
+    "reps": 10
+  }
+]

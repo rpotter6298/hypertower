@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Bilateral cd-only at refugelike. 10 reps. For Figure 4 bilateral cd column. Pairs with phase2_v4/cd_solo_single (single-eye) to show whether the bilateral hb fusion improves a pure-clinical model.",
+    "run_name": "experiments/phase4_v4/cd_solo_bilateral",
+    "reps": 10
+  }
+]

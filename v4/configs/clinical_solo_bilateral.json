@@ -1,0 +1,89 @@
+{
+  "_notes": [
+    "Clinical-only at patient level (bilateral). Mirrors clinical_solo.json but",
+    "adds the hb stage so cd_fuse(OD) and cd_fuse(OS) are aggregated at",
+    "patient level. Pairs with single-eye clinical_solo for the Figure 4",
+    "bilateral comparison."
+  ],
+  "run_name": "v4/clinical_solo_bilateral",
+  "num_classes": 2,
+  "label_filter": [0, 1],
+  "split_identity_level": 1,
+  "eval_stage": "hb",
+  "save_predictions": true,
+  "seed": 1234,
+  "folds": 5,
+  "fold_seed": 100,
+  "output_root": "v4/results",
+  "out_dir_tags": ["binary"],
+  "data": {
+    "module": "v4.classes.profiles.v4papila",
+    "args": {
+      "image_dir": "Papila/FundusImages",
+      "clinical_dir": "Papila/ClinicalData",
+      "label_col": "Diagnosis",
+      "iop_corr_method": "ratio",
+      "iop_drop_raw": true,
+      "exclude_cols": ["Axial_Length"],
+      "in_memory_cache": false
+    }
+  },
+  "towers": [
+    {
+      "name": "cd",
+      "module": "v4.classes.towers.clinical_tower",
+      "class": "ClinicalEncoder",
+      "data_source": "matrix",
+      "args": { "hidden_dim": 128 }
+    }
+  ],
+  "stages": [
+    {
+      "name": "cd_warm",
+      "type": "warm",
+      "tower": "cd",
+      "head_name": "cd_aux",
+      "level": "eye",
+      "epochs": 40
+    },
+    {
+      "name": "cd_aux",
+      "type": "head",
+      "input": "cd",
+      "train_with": "cd_fuse"
+    },
+    {
+      "name": "cd_fuse",
+      "type": "fusion",
+      "module": "v4.classes.bridges.mono_bridge",
+      "class": "MonoBridge",
+      "inputs": ["cd"],
+      "level": "eye",
+      "epochs": 36,
+      "train_towers": true,
+      "args": { "use_ln": false }
+    },
+    {
+      "name": "hb",
+      "type": "fusion",
+      "module": "v4.classes.bridges.hyperbridge",
+      "class": "HyperBridge",
+      "inputs": { "a": "cd_fuse", "b": "cd_fuse" },
+      "level": "patient",
+      "epochs": 10,
+      "args": { "hidden_dim": 256, "mode": "embedding_mlp" }
+    },
+    {
+      "name": "hb_head",
+      "type": "head",
+      "input": "hb",
+      "train_with": "hb",
+      "args": { "dropout": 0.3 }
+    }
+  ],
+  "training": {
+    "lr": 1e-4,
+    "batch_size": 16,
+    "tune_binary_threshold": true
+  }
+}

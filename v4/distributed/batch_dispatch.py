@@ -30,6 +30,9 @@ batch.json format:
         "stage_overrides": {                         // optional — patched by stage name
           "nt": { "epochs": 40 }
         },
+        "tower_overrides": {                         // optional — patched by tower name
+          "img": { "args": { "backbone": "convnextv2_tiny" } }
+        },
         "reps":     10,                              // optional — overrides --reps
         "priority": 0                                // optional
       }
@@ -83,6 +86,22 @@ def apply_stage_overrides(stages: list[dict], stage_overrides: dict) -> list[dic
     return stages
 
 
+def apply_tower_overrides(towers: list[dict], tower_overrides: dict) -> list[dict]:
+    """Patch individual towers by name without replacing the entire list.
+
+    Useful for backbone swaps and other per-tower arg tweaks:
+        "tower_overrides": { "img": { "args": { "backbone": "convnextv2_tiny" } } }
+    """
+    towers = copy.deepcopy(towers)
+    for tower in towers:
+        name = tower.get("name")
+        if name in tower_overrides:
+            merged = deep_merge(tower, tower_overrides[name])
+            tower.clear()
+            tower.update(merged)
+    return towers
+
+
 def build_config(base_cfg: dict, entry: dict, rep: int, seed: int, fold_seed: int,
                  output_root: str) -> dict:
     """Produce the final merged config for one rep of one batch entry."""
@@ -94,6 +113,10 @@ def build_config(base_cfg: dict, entry: dict, rep: int, seed: int, fold_seed: in
     # Patch individual stages by name
     if "stage_overrides" in entry and "stages" in cfg:
         cfg["stages"] = apply_stage_overrides(cfg["stages"], entry["stage_overrides"])
+
+    # Patch individual towers by name (backbone swaps, arg tweaks)
+    if "tower_overrides" in entry and "towers" in cfg:
+        cfg["towers"] = apply_tower_overrides(cfg["towers"], entry["tower_overrides"])
 
     # Stamp run_name, model seed, split seed, output_root.
     base_run_name = entry["run_name"]

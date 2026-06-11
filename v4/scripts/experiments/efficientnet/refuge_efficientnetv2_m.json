@@ -1,0 +1,15 @@
+[
+  {
+    "_note": "REFUGE-pretrained EfficientNetV2-M (whole-image, no UNet/disc crop) vs ImageNet-pretrained V2-M (0.9029) and refugelike resnet50 (0.8958). Tests whether fundus-domain pretraining beats ImageNet for V2-M.",
+    "run_name": "experiments/efficientnet/refuge_efficientnetv2_m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "refuge_efficientnet_v2_m",
+          "freeze_ratio": 0.0
+        }
+      }
+    }
+  }
+]

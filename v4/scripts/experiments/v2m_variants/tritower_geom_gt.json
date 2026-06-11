@@ -1,0 +1,11 @@
+[
+  {
+    "_note": "S1 V2-M: tritower (img+cd+geom) with the geom tower fed GT contour-rasterized masks, at refuge V2-M. Pairs with phase6_v4/tritower_geom_gt (refugelike) and refuge_v2m_baseline/tritower (V2-M, UNet seg).",
+    "run_name": "experiments/v2m_variants/tritower_geom_gt_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img":  { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } },
+      "geom": { "args": { "seg_source": "gt" } }
+    }
+  }
+]

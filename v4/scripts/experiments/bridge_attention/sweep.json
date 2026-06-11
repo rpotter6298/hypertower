@@ -1,0 +1,230 @@
+[
+  {
+    "_note": "Bridge attention sweep — gated × mobilenet_v2 (ImageNet, weakest off-the-shelf). Per-sample sigmoid gates expose how much each tower contributes. Tests the hypothesis 'as image tower strengthens, bridge downweights clinical'.",
+    "run_name": "experiments/bridge_attention/gated_mobilenet_v2",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "mobilenet_v2", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — gated × resnet50 (ImageNet weights, NOT refuge-pretrained).",
+    "run_name": "experiments/bridge_attention/gated_resnet50",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "resnet50", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — gated × efficientnet_b0 (ImageNet).",
+    "run_name": "experiments/bridge_attention/gated_efficientnet_b0",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "efficientnet_b0", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — gated × efficientnet_v2_m (ImageNet, strongest off-the-shelf).",
+    "run_name": "experiments/bridge_attention/gated_efficientnet_v2_m",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — gated × refugelike (resnet50 + REFUGE pretrain). Pairs with refugelike fundus-domain prior; tests whether REFUGE-pretrained image tower shifts the bridge's attention compared to its ImageNet-only counterpart.",
+    "run_name": "experiments/bridge_attention/gated_refugelike",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — gated × refuge_efficientnet_v2_m (V2-M + REFUGE pretrain, headline production backbone).",
+    "run_name": "experiments/bridge_attention/gated_refuge_efficientnet_v2_m",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × mobilenet_v2 (ImageNet). Orthogonality penalty pushes streams to encode different info; per-stream variance-explained is the attention readout.",
+    "run_name": "experiments/bridge_attention/ortho_mobilenet_v2",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "mobilenet_v2", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × resnet50 (ImageNet).",
+    "run_name": "experiments/bridge_attention/ortho_resnet50",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "resnet50", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × efficientnet_b0 (ImageNet).",
+    "run_name": "experiments/bridge_attention/ortho_efficientnet_b0",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "efficientnet_b0", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × efficientnet_v2_m (ImageNet).",
+    "run_name": "experiments/bridge_attention/ortho_efficientnet_v2_m",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × refugelike (resnet50 + REFUGE pretrain).",
+    "run_name": "experiments/bridge_attention/ortho_refugelike",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  {
+    "_note": "Bridge attention sweep — ortho_w0.1 × refuge_efficientnet_v2_m (V2-M + REFUGE pretrain, headline production backbone).",
+    "run_name": "experiments/bridge_attention/ortho_refuge_efficientnet_v2_m",
+    "reps": 10,
+    "overrides": { "save_checkpoints": true, "save_predictions": true },
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args":   {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  }
+]

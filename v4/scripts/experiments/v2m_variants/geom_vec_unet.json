@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "S1 V2-M: ensemble + UNet-derived geometry vector injection at refuge V2-M.",
+    "run_name": "experiments/v2m_variants/ensemble_geom_vec_unet_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

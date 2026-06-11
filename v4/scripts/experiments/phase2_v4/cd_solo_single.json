@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Single-eye cd-only at refugelike (no img tower). 10 reps. For Figure 2 cd column. Pairs with img_solo_single_refugelike and ensemble_single_refugelike to complete the single-mode tower-ablation cascade.",
+    "run_name": "experiments/phase2_v4/cd_solo_single",
+    "reps": 10
+  }
+]

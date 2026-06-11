@@ -1,0 +1,64 @@
+[
+  { "_note": "OrthoBridge wrapping Hadamard FusionBridge, img+cd ensemble. Sweep ortho_weight ∈ {0.01, 0.1, 1.0, 10.0}. 3 reps each.",
+
+    "run_name": "experiments/tri_v1/ortho/ensemble_w0.01", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.01,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/ortho/ensemble_w0.1", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 0.1,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/ortho/ensemble_w1", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 1.0,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  },
+  { "run_name": "experiments/tri_v1/ortho/ensemble_w10", "reps": 3,
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.ortho_bridge",
+        "class":  "OrthoBridge",
+        "args": {
+          "fusion_dim":   256,
+          "ortho_weight": 10.0,
+          "inner_module": "v4.classes.bridges.fusion_bridge",
+          "inner_class":  "FusionBridge",
+          "inner_args":   { "fusion_dim": 256 }
+        }
+      }
+    }
+  }
+]

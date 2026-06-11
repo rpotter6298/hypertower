@@ -1,0 +1,28 @@
+[
+  {
+    "_note": "Single-eye regression at nt=50, refugelike backbone. Eye-level fusion (no hb), regression heads predicting per-eye vf_md. Pairs with the bilateral baseline_reg_nt50 (mean-of-eyes target, hb fusion) for the worst-eye aggregation analysis: predict per-eye MD at nt, then aggregate to patient-level via min(OD_pred, OS_pred).",
+    "run_name": "experiments/reg_head/single_eye_reg_nt50",
+    "reps": 10,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 50 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  }
+]

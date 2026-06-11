@@ -12,7 +12,7 @@ from v4.classes.dataset import LoaderShell, to_label_tensor
 from v4.classes.metrics import score_arrays, compute_extended_metrics, tune_binary_threshold
 from v4.classes.stages.helpers import (
     class_weights_from_shell, encode_embedding, get_out_dim, resolve_input_dims,
-    phase_for_epoch,
+    phase_for_epoch, head_compute_loss, head_to_probs, head_score, head_target_key,
 )
 
 
@@ -27,18 +27,23 @@ def collect_probs(
     device,
     num_classes:  int,
 ) -> tuple[np.ndarray, np.ndarray, list, np.ndarray]:
-    """Eval pass for one fusion stage; returns (y_true, softmax_probs, entity_ids, embeddings)."""
-    from v4.classes.dataset import to_label_tensor
+    """Eval pass for one fusion stage; returns (y_true, predictions, entity_ids, embeddings).
+
+    For classification heads, `predictions` is the softmax over classes (B, C).
+    For regression heads (or any head with a `to_probs` method), it's whatever
+    that method returns — typically per-sample scalar predictions.
+    """
     bridge.eval(); primary_head.eval()
     for t in towers.values():
         t.eval()
     inputs       = stage_cfg["inputs"]
     is_bilateral = isinstance(inputs, dict)
+    target_key   = head_target_key(primary_head)
     y_all, p_all, ids_all, z_all = [], [], [], []
 
     with torch.no_grad():
         for batch in loader:
-            y = batch.get("label")
+            y = batch.get(target_key, batch.get("label"))
             if not torch.is_tensor(y):
                 continue
 
@@ -56,13 +61,13 @@ def collect_probs(
                 z = bridge(embs)
 
             logits = primary_head(z)
-            y_all.append(to_label_tensor(y, device).cpu().numpy())
-            p_all.append(F.softmax(logits, dim=1).cpu().numpy())
+            y_all.append(y.detach().cpu().numpy())
+            p_all.append(head_to_probs(primary_head, logits))
             z_all.append(z.cpu().numpy())
             ids_all.extend(batch.get("entity_id", []))
 
     if not y_all:
-        return (np.zeros(0, dtype=np.int64), np.zeros((0, num_classes), dtype=np.float32),
+        return (np.zeros(0, dtype=np.float32), np.zeros((0,), dtype=np.float32),
                 [], np.zeros((0, 0), dtype=np.float32))
     return (np.concatenate(y_all), np.concatenate(p_all, axis=0),
             ids_all, np.concatenate(z_all, axis=0))
@@ -170,7 +175,10 @@ def run(
     warmup_cfg = stage_cfg.get("warmup", {})
     wt         = 0 if is_bilateral else warmup_cfg.get("tower_epochs", 0)
     wf         = 0 if is_bilateral else warmup_cfg.get("fused_epochs",  0)
-    bcd_prob   = cfg["training"].get("bcd_prob", 0.5)
+    bcd_prob        = cfg["training"].get("bcd_prob", 0.5)
+    tower_loss_mode = cfg["training"].get("tower_loss_mode", "bcd")
+    if tower_loss_mode not in ("bcd", "all_losses"):
+        raise ValueError(f"tower_loss_mode must be 'bcd' or 'all_losses'; got {tower_loss_mode!r}")
 
     cw = class_weights_from_shell(
         s_train, num_classes, device,
@@ -205,6 +213,7 @@ def run(
             phase = "fusion"
 
         total_loss = total_correct = total_n = 0
+        is_class = not hasattr(primary_head, "target_key")
 
         for batch in train_loader:
             y = batch.get("label")
@@ -234,10 +243,15 @@ def run(
             }
 
             if is_bilateral or phase == "fused_warmup":
-                logits = head_logits.get(primary_hs_cfg["name"])
+                logits      = head_logits.get(primary_hs_cfg["name"])
+                chosen_head = head_models.get(primary_hs_cfg["name"])
             elif phase == "tower_warmup" and bcd_head_cfgs:
-                losses = [F.cross_entropy(head_logits[hs["name"]], y_t, weight=cw)
-                          for hs in bcd_head_cfgs if hs["name"] in head_logits]
+                losses = [
+                    head_compute_loss(head_models[hs["name"]],
+                                      head_logits[hs["name"]], batch, y_t,
+                                      class_weights=cw)
+                    for hs in bcd_head_cfgs if hs["name"] in head_logits
+                ]
                 if not losses:
                     continue
                 loss = sum(losses) / len(losses)
@@ -247,19 +261,42 @@ def run(
                 total_loss += loss.item() * len(y_t)
                 total_n    += len(y_t)
                 continue
+            elif tower_loss_mode == "all_losses" and bcd_head_cfgs:
+                # All-losses (v3 phase 3 control): sum primary + every aux head
+                # loss every step. Effective LR is implicitly N× single-head BCD
+                # — matches v3 semantics so the comparison is apples-to-apples.
+                all_head_names = ([primary_hs_cfg["name"]]
+                                  + [hs["name"] for hs in bcd_head_cfgs])
+                losses = [
+                    head_compute_loss(head_models[n], head_logits[n], batch, y_t,
+                                      class_weights=cw)
+                    for n in all_head_names if n in head_logits
+                ]
+                if not losses:
+                    continue
+                loss = sum(losses)
+                if hasattr(bridge, "modify_loss"):
+                    loss = bridge.modify_loss(loss)
+                opt.zero_grad(); loss.backward(); opt.step()
+                total_loss += loss.item() * len(y_t)
+                total_n    += len(y_t)
+                continue
             else:
                 if bcd_head_cfgs and _random() < bcd_prob:
-                    logits = head_logits.get(choice(bcd_head_cfgs)["name"])
+                    chosen_hs = choice(bcd_head_cfgs)
                 else:
-                    logits = head_logits.get(primary_hs_cfg["name"])
+                    chosen_hs = primary_hs_cfg
+                logits      = head_logits.get(chosen_hs["name"])
+                chosen_head = head_models.get(chosen_hs["name"])
 
             if logits is None:
                 continue
-            loss = F.cross_entropy(logits, y_t, weight=cw)
+            loss = head_compute_loss(chosen_head, logits, batch, y_t, class_weights=cw)
             if hasattr(bridge, "modify_loss"):
                 loss = bridge.modify_loss(loss)
             opt.zero_grad(); loss.backward(); opt.step()
-            total_correct += int((logits.argmax(1) == y_t).sum())
+            if logits.dim() >= 2:
+                total_correct += int((logits.argmax(1) == y_t).sum())
             total_loss    += loss.item() * len(y_t)
             total_n       += len(y_t)
 
@@ -268,49 +305,61 @@ def run(
 
         y_v, p_v, _, _ = collect_probs(bridge, primary_head, stage_cfg, towers,
                                        stage_models, cfg_stages, val_loader, device, num_classes)
-        _, val_auc, _ = score_arrays(y_v, p_v, num_classes) if y_v.size else (nan, nan, nan)
-        print(
-            f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{epochs} [{phase:14s}]"
-            f"  loss={tr_loss:.4f}  acc={tr_acc:.3f}  val_auc={val_auc:.4f}",
-            flush=True,
-        )
+        epoch_scores = head_score(primary_head, y_v, p_v, num_classes)
+        val_metric   = epoch_scores.get("primary", nan)
+        metric_name  = epoch_scores.get("primary_name", "auc")
+        if is_class:
+            print(
+                f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{epochs} [{phase:14s}]"
+                f"  loss={tr_loss:.4f}  acc={tr_acc:.3f}  val_{metric_name}={val_metric:.4f}",
+                flush=True,
+            )
+        else:
+            print(
+                f"  fold{fold+1} [{name}] ep{epoch+1:03d}/{epochs} [{phase:14s}]"
+                f"  loss={tr_loss:.4f}  val_{metric_name}={val_metric:.4f}",
+                flush=True,
+            )
 
     # ── Final eval ────────────────────────────────────────────────────────────
     y_val, p_val, ids_val, z_val = collect_probs(bridge, primary_head, stage_cfg, towers,
                                                   stage_models, cfg_stages, val_loader, device, num_classes)
-    val_acc, val_auc, val_n = (score_arrays(y_val, p_val, num_classes)
-                               if y_val.size else (nan, nan, nan))
-    ext = compute_extended_metrics(y_val, p_val, num_classes) if y_val.size else {}
+    val_scores = head_score(primary_head, y_val, p_val, num_classes)
 
     val_threshold = 0.5
     if (cfg["training"].get("tune_binary_threshold")
-            and num_classes == 2 and y_val.size >= 2):
+            and num_classes == 2 and y_val.size >= 2
+            and p_val.ndim == 2 and p_val.shape[1] == 2):
         val_threshold = tune_binary_threshold(y_val, p_val[:, 1])
 
     y_te = p_te = ids_te = z_te = None
-    test_auc = test_acc = test_n = nan
+    test_scores: dict = {}
     if test_loader is not None:
         y_te, p_te, ids_te, z_te = collect_probs(bridge, primary_head, stage_cfg, towers,
                                                   stage_models, cfg_stages, test_loader, device, num_classes)
-        test_acc, test_auc, test_n = (score_arrays(y_te, p_te, num_classes)
-                                      if y_te.size else (nan, nan, nan))
+        test_scores = head_score(primary_head, y_te, p_te, num_classes)
 
     updated = dict(stage_models)
     updated[name] = bridge
     updated.update(head_models)
 
-    metrics = {
-        f"{name}_val_auc":       val_auc,
-        f"{name}_val_acc":       val_acc,
-        f"{name}_val_n":         val_n,
-        f"{name}_val_kappa":     ext.get("kappa", nan),
-        f"{name}_val_mcc":       ext.get("mcc", nan),
-        f"{name}_val_f1":        ext.get("macro_f1", nan),
-        f"{name}_val_threshold": val_threshold,
-        f"{name}_test_auc":      test_auc,
-        f"{name}_test_acc":      test_acc,
-        f"{name}_test_n":        test_n,
-    }
+    # Metrics: prefix every score-dict key with stage name + split, plus a fixed
+    # `_val_primary` / `_test_primary` slot that the summary writer can read
+    # without knowing the metric's name.
+    metrics: dict = {f"{name}_val_threshold": val_threshold}
+    for k, v in val_scores.items():
+        if k == "primary_name":
+            continue
+        if isinstance(v, (int, float)):
+            metrics[f"{name}_val_{k}"] = float(v)
+    metrics[f"{name}_val_primary_name"] = val_scores.get("primary_name", "auc")
+    for k, v in test_scores.items():
+        if k == "primary_name":
+            continue
+        if isinstance(v, (int, float)):
+            metrics[f"{name}_test_{k}"] = float(v)
+    metrics[f"{name}_test_primary_name"] = test_scores.get("primary_name",
+                                                            metrics[f"{name}_val_primary_name"])
     pred_data = {
         name: {
             "val_y": y_val, "val_p": p_val, "val_ids": ids_val, "val_z": z_val,

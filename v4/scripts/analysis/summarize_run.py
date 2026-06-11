@@ -39,14 +39,20 @@ def find_rep_summaries(run_dir: Path) -> list[tuple[int, Path]]:
 
 
 def load_rep(summary_path: Path) -> dict:
-    """Extract the fields we summarise from one rep's summary.json."""
+    """Extract the fields we summarise from one rep's summary.json.
+
+    Uses `primary_metric` if present (for regression runs e.g. neg_mse),
+    falling back to AUC for legacy classification runs.
+    """
     d = json.loads(summary_path.read_text())
+    pm = d.get("primary_metric", "auc")
     return {
-        "val_mean":  float(d.get("mean_val_auc",  float("nan"))),
-        "val_std":   float(d.get("std_val_auc",   float("nan"))),
-        "test_mean": float(d.get("mean_test_auc", float("nan"))),
-        "test_std":  float(d.get("std_test_auc",  float("nan"))),
-        "elapsed_s": float(d.get("elapsed_s",     float("nan"))),
+        "primary":    pm,
+        "val_mean":   float(d.get(f"mean_val_{pm}",  d.get("mean_val_auc",  float("nan")))),
+        "val_std":    float(d.get(f"std_val_{pm}",   d.get("std_val_auc",   float("nan")))),
+        "test_mean":  float(d.get(f"mean_test_{pm}", d.get("mean_test_auc", float("nan")))),
+        "test_std":   float(d.get(f"std_test_{pm}",  d.get("std_test_auc",  float("nan")))),
+        "elapsed_s":  float(d.get("elapsed_s",       float("nan"))),
         "eval_stage": d.get("eval_stage", "?"),
     }
 
@@ -63,6 +69,7 @@ def summarise(run_dir: Path) -> dict:
         "run":         str(run_dir),
         "n_reps":      len(rows),
         "eval_stage":  rows[0][1]["eval_stage"],
+        "primary":     rows[0][1]["primary"],
         "val_mean":    float(np.mean(val)),
         "val_std":     float(np.std(val)),
         "val_min":     float(np.min(val)),
@@ -83,12 +90,13 @@ def render(s: dict, per_rep: bool = False) -> str:
     if s["n_reps"] == 0:
         return f"Run: {s['run']}\n  no reps with summary.json found."
 
+    metric = s.get("primary", "auc")
     lines = [
         f"Run:        {s['run']}",
-        f"Reps:       {s['n_reps']}  (eval_stage={s['eval_stage']})",
-        f"Val  AUC:   {s['val_mean']:.4f} ± {s['val_std']:.4f}   "
+        f"Reps:       {s['n_reps']}  (eval_stage={s['eval_stage']}, metric={metric})",
+        f"Val  {metric}:   {s['val_mean']:.4f} ± {s['val_std']:.4f}   "
         f"[min={s['val_min']:.4f}  max={s['val_max']:.4f}]",
-        f"Test AUC:   {s['test_mean']:.4f} ± {s['test_std']:.4f}   "
+        f"Test {metric}:   {s['test_mean']:.4f} ± {s['test_std']:.4f}   "
         f"[min={s['test_min']:.4f}  max={s['test_max']:.4f}]",
     ]
     if s.get("elapsed_total_s") is not None:

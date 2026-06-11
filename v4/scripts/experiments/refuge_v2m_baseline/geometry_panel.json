@@ -1,0 +1,19 @@
+[
+  {
+    "_note": "Geometry-vector injection (GT contours, EPC) added to img+cd ensemble at refuge V2-M backbone. Replaces refugelike's ensemble_fused/geom_gt (0.9121) at the new backbone. For the geometry panel.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_geom_vec_gt",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "Geometry-vector injection via UNet-derived geometry (not GT). Same architecture; uses the per-fold-finetuned UNet segmenter EPC channel. Tests whether GT vs predicted segmentation matters under the new backbone.",
+    "run_name": "experiments/refuge_v2m_baseline/ensemble_geom_vec_unet",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    }
+  }
+]

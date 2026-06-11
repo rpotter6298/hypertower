@@ -1,0 +1,49 @@
+[
+  {
+    "_note": "F3 V2-M variant: single-eye img+cd ensemble at refuge V2-M with ConcatBridge at nt. Pairs with phase3_v4/single_bcd_concat (refugelike) for the cross-backbone view.",
+    "run_name": "experiments/v2m_variants/single_bcd_concat_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.concat_bridge",
+        "class":  "ConcatBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "F3 V2-M: single-eye PairwiseAdditiveBridge at refuge V2-M.",
+    "run_name": "experiments/v2m_variants/single_bcd_pairwise_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.pairwise_bridge",
+        "class":  "PairwiseAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  },
+
+  {
+    "_note": "F3 V2-M: single-eye GatedAdditiveBridge at refuge V2-M.",
+    "run_name": "experiments/v2m_variants/single_bcd_gated_v2m",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refuge_efficientnet_v2_m", "freeze_ratio": 0.0 } }
+    },
+    "stage_overrides": {
+      "nt": {
+        "module": "v4.classes.bridges.gated_bridge",
+        "class":  "GatedAdditiveBridge",
+        "args":   { "fusion_dim": 256 }
+      }
+    }
+  }
+]

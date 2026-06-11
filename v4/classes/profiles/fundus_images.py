@@ -667,7 +667,8 @@ def build_seg_map_loader(source: str, **kwargs):
     if source == "gt":
         if "contour_dir" not in kwargs:
             raise ValueError("build_seg_map_loader source='gt' requires contour_dir")
-        return GTSegMapLoader(**kwargs)
+        gt_keys = {"contour_dir", "channels", "mask_size", "target_size", "crop_to_disc"}
+        return GTSegMapLoader(**{k: v for k, v in kwargs.items() if k in gt_keys})
     if source == "unet":
         if "weights_path" not in kwargs:
             raise ValueError("build_seg_map_loader source='unet' requires weights_path")

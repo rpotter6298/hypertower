@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from v4.classes.dataset import to_label_tensor
-from v4.classes.stages.helpers import class_weights_from_shell
+from v4.classes.stages.helpers import class_weights_from_shell, head_compute_loss
 
 
 def run(
@@ -80,6 +80,7 @@ def run(
 
     towers[tower_name].train()
     probe.train()
+    is_classification = True
     for epoch in range(n_epochs):
         total_loss = total_correct = total_n = 0
         for batch in loader:
@@ -89,16 +90,26 @@ def run(
                 continue
             y_t    = to_label_tensor(y, device)
             logits = probe(towers[tower_name](x.to(device)))
-            loss   = F.cross_entropy(logits, y_t, weight=cw)
+            loss   = head_compute_loss(probe, logits, batch, y_t, class_weights=cw)
             opt.zero_grad(); loss.backward(); opt.step()
             total_loss    += loss.item() * len(y_t)
-            total_correct += int((logits.argmax(1) == y_t).sum())
+            if logits.dim() >= 2:
+                total_correct += int((logits.argmax(1) == y_t).sum())
+            else:
+                is_classification = False
             total_n       += len(y_t)
-        print(
-            f"  fold{fold+1} [warm/{tower_name}] ep{epoch+1:03d}/{n_epochs}"
-            f"  loss={total_loss/total_n:.4f}  acc={total_correct/total_n:.3f}",
-            flush=True,
-        )
+        if is_classification:
+            print(
+                f"  fold{fold+1} [warm/{tower_name}] ep{epoch+1:03d}/{n_epochs}"
+                f"  loss={total_loss/total_n:.4f}  acc={total_correct/total_n:.3f}",
+                flush=True,
+            )
+        else:
+            print(
+                f"  fold{fold+1} [warm/{tower_name}] ep{epoch+1:03d}/{n_epochs}"
+                f"  loss={total_loss/total_n:.4f}",
+                flush=True,
+            )
 
     for t in towers.values():
         for p in t.parameters():

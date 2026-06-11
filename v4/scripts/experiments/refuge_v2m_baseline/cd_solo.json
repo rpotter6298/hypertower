@@ -1,0 +1,7 @@
+[
+  {
+    "_note": "Clinical-only floor reference under the new baseline framework. No img backbone change since there is no img tower.",
+    "run_name": "experiments/refuge_v2m_baseline/cd_solo",
+    "reps": 3
+  }
+]
