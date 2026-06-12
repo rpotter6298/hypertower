@@ -101,6 +101,32 @@ class _Server:
 # GPU info
 # ──────────────────────────────────────────────────────────────
 
+def _gpu_precheck() -> tuple[bool, str]:
+    """Quick allocation + op test on every visible CUDA/HIP device.
+
+    Catches the case where torch.cuda.is_available() returns True but the
+    device is busy (e.g. another process holding it — Ollama, a forgotten
+    notebook, an OS-level driver issue). Returns (ok, message); when ok is
+    False, the caller should defer polling rather than accept a job that will
+    crash on the first .to(device) call.
+    """
+    try:
+        import torch
+    except Exception as e:
+        return False, f"torch import failed: {e}"
+    if not torch.cuda.is_available():
+        return True, "no-cuda (cpu-only client)"
+    try:
+        for i in range(torch.cuda.device_count()):
+            x = torch.zeros(1024, device=f"cuda:{i}")
+            _ = (x + 1).sum().item()  # forces actual kernel launch
+            del x
+        torch.cuda.empty_cache()
+        return True, "ok"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def _gpu_info() -> str:
     # NVIDIA
     try:
@@ -405,8 +431,22 @@ def main():
         ) else 1)
 
     print(f"[client] polling every {args.poll_interval}s...", flush=True)
+    last_precheck_msg = ""
     while True:
         try:
+            ok, msg = _gpu_precheck()
+            if not ok:
+                if msg != last_precheck_msg:
+                    print(f"[client] gpu precheck failed ({msg}) — deferring polls",
+                          flush=True)
+                    last_precheck_msg = msg
+                server.push_status(StatusPush(state="gpu_busy"))
+                time.sleep(args.poll_interval)
+                continue
+            if last_precheck_msg:
+                print(f"[client] gpu precheck recovered — resuming polls", flush=True)
+                last_precheck_msg = ""
+
             job = server.poll()
             if job is None:
                 server.push_status(StatusPush(state="idle"))

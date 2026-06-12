@@ -47,7 +47,11 @@ _TOKEN: str = ""
 _DB_PATH: Path = Path("v4/distributed/jobs.db")
 _REPO_ROOT: Path = Path.cwd()
 _CLIENT_TTL: int = 120  # seconds before a client is considered gone
-_MAX_ATTEMPTS: int = 3  # max times a job is retried before being left as failed
+_MAX_ATTEMPTS: int = 4  # max times a job is retried (cumulatively, across clients)
+                        # before being marked permanently failed
+_CLIENT_FAIL_LIMIT: int = 3  # consecutive job failures from a single client before
+                             # that client is quarantined (no more poll dispatches
+                             # until it re-registers). A successful job resets it.
 _SERVER_START_TS: float = 0.0  # set in main(); used as a reaper grace window
 
 _clients: dict[str, ClientInfo] = {}
@@ -222,6 +226,19 @@ def poll(client_id: str):
     with _clients_lock:
         needs_reregister = _ensure_client(client_id)
         _clients[client_id].last_seen = _now()
+        # Quarantine: a client that has failed _CLIENT_FAIL_LIMIT jobs in a row
+        # is cut off from new dispatches until it re-registers. The client's
+        # poll() helper auto-calls _reregister() when please_reregister=True
+        # arrives, which clears the streak. Successful completions also reset
+        # the streak, so a healthy client never trips this check.
+        if _clients[client_id].fail_streak >= _CLIENT_FAIL_LIMIT:
+            print(
+                f"[server] {client_id} quarantined "
+                f"(fail_streak={_clients[client_id].fail_streak}); "
+                f"requesting re-register before next dispatch",
+                flush=True,
+            )
+            return PollResponse(job=None, please_reregister=True)
 
     with _db() as conn:
         row = conn.execute(
@@ -296,6 +313,28 @@ def get_client(client_id: str):
 
 @app.post("/complete", dependencies=[Depends(_check_token)])
 def complete(result: JobResult):
+    # Pull the worker that ran this job before touching the row, so we can
+    # update its streak regardless of which branch we take below.
+    with _db() as conn:
+        assigned_row = conn.execute(
+            "SELECT assigned_to FROM jobs WHERE job_id=?", (result.job_id,)
+        ).fetchone()
+    assigned_to = assigned_row["assigned_to"] if assigned_row else None
+
+    with _clients_lock:
+        if assigned_to and assigned_to in _clients:
+            if result.success:
+                _clients[assigned_to].fail_streak = 0
+            else:
+                _clients[assigned_to].fail_streak += 1
+                if _clients[assigned_to].fail_streak >= _CLIENT_FAIL_LIMIT:
+                    print(
+                        f"[server] {assigned_to} hit fail_streak="
+                        f"{_clients[assigned_to].fail_streak}; will quarantine "
+                        f"on next poll",
+                        flush=True,
+                    )
+
     with _db() as conn:
         if result.success:
             conn.execute(

@@ -32,6 +32,7 @@ class ClientInfo(BaseModel):
     gpu_info: str
     status: StatusPush
     last_seen: str
+    fail_streak: int = 0  # consecutive job failures; resets on success or register
 
 
 class JobSpec(BaseModel):
