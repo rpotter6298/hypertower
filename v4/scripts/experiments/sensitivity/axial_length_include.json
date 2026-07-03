@@ -1,0 +1,16 @@
+[
+  {
+    "_note": "Sensitivity: refugelike ensemble (img + cd, bilateral) — apples-to-apples replication of tri_v1/baseline_ensemble (mean hb_test_auc ≈ 0.896) but with Axial_Length INCLUDED in the clinical feature set instead of excluded. Tests whether the pilot-era finding that Axial_Length negatively contributed to fused AUC survives the v4 architecture. Same seed/fold_seed start (1234/100) as baseline_ensemble so (rep, fold) pairs are matched for paired statistics. save_checkpoints + save_predictions enabled so the run can drive a downstream permutation-importance feature ablation if needed.",
+    "run_name": "experiments/sensitivity/refugelike_ensemble_with_axial_length",
+    "reps": 10,
+    "overrides": {
+      "save_checkpoints": true,
+      "save_predictions": true,
+      "data": {
+        "args": {
+          "exclude_cols": []
+        }
+      }
+    }
+  }
+]

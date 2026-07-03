@@ -413,8 +413,33 @@ def submit_job(job: JobSubmit):
         )
         if cur.rowcount == 0:
             existing = conn.execute(
-                "SELECT job_id FROM jobs WHERE args=?", (args_json,)
+                "SELECT job_id, state FROM jobs WHERE args=?", (args_json,)
             ).fetchone()
+            # If the existing duplicate is a terminal failure, drop it and
+            # take the new submission — saves an explicit /jobs/clear round-
+            # trip when re-deploying after a fix.
+            if existing["state"] == "failed":
+                conn.execute(
+                    "DELETE FROM jobs WHERE job_id=?", (existing["job_id"],)
+                )
+                conn.execute(
+                    "INSERT INTO jobs "
+                    "(job_id, run_name, module, args, output_dir, priority, created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (job_id, job.run_name, job.module, args_json,
+                     job.output_dir, job.priority, _now()),
+                )
+                print(
+                    f"[server] requeued failed {existing['job_id']} → {job_id} "
+                    f"({job.run_name})",
+                    flush=True,
+                )
+                return {
+                    "job_id":          job_id,
+                    "duplicate":       False,
+                    "requeued":        True,
+                    "previous_job_id": existing["job_id"],
+                }
             job_id = existing["job_id"]
             print(f"[server] duplicate ignored ({job.run_name}) → {job_id}", flush=True)
             return {"job_id": job_id, "duplicate": True}

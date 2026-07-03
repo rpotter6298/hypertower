@@ -1,12 +1,27 @@
 """stages/fusion — fusion stage runner: trains a bridge + associated head stages."""
 from __future__ import annotations
 
+import contextlib
 import importlib
 from random import choice, random as _random
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+
+def _amp_ctx(cfg: dict, device):
+    """Autocast context for forward+loss when training.amp is enabled.
+
+    bf16 is the default dtype because its dynamic range matches fp32 and no
+    GradScaler is required. Falls back to a no-op context when amp is disabled
+    or the device is not CUDA/ROCm.
+    """
+    train_cfg = cfg.get("training", {})
+    if not train_cfg.get("amp", False) or getattr(device, "type", None) != "cuda":
+        return contextlib.nullcontext()
+    dtype = getattr(torch, train_cfg.get("amp_dtype", "bfloat16"))
+    return torch.autocast(device_type="cuda", dtype=dtype)
 
 from v4.classes.dataset import LoaderShell, to_label_tensor
 from v4.classes.metrics import score_arrays, compute_extended_metrics, tune_binary_threshold
@@ -223,82 +238,78 @@ def run(
             if y_t.numel() == 0:
                 continue
 
-            if is_bilateral:
-                side_embs  = {
-                    side: encode_embedding(src, batch, side, towers, stage_models, cfg_stages, device)
-                    for side, src in inputs.items()
-                }
-                local_embs = {name: bridge(side_embs)}
-            else:
-                local_embs = {n: towers[n](batch[n].to(device)) for n in inputs
-                              if n in batch and torch.is_tensor(batch[n])}
-                if len(local_embs) != len(inputs):
-                    continue
-                local_embs[name] = bridge(list(local_embs[n] for n in inputs))
+            loss   = None
+            logits = None
 
-            head_logits = {
-                hs["name"]: head_models[hs["name"]](local_embs[hs["input"]])
-                for hs in head_stage_cfgs
-                if hs["input"] in local_embs
-            }
-
-            if is_bilateral or phase == "fused_warmup":
-                logits      = head_logits.get(primary_hs_cfg["name"])
-                chosen_head = head_models.get(primary_hs_cfg["name"])
-            elif phase == "tower_warmup" and bcd_head_cfgs:
-                losses = [
-                    head_compute_loss(head_models[hs["name"]],
-                                      head_logits[hs["name"]], batch, y_t,
-                                      class_weights=cw)
-                    for hs in bcd_head_cfgs if hs["name"] in head_logits
-                ]
-                if not losses:
-                    continue
-                loss = sum(losses) / len(losses)
-                if hasattr(bridge, "modify_loss"):
-                    loss = bridge.modify_loss(loss)
-                opt.zero_grad(); loss.backward(); opt.step()
-                total_loss += loss.item() * len(y_t)
-                total_n    += len(y_t)
-                continue
-            elif tower_loss_mode == "all_losses" and bcd_head_cfgs:
-                # All-losses (v3 phase 3 control): sum primary + every aux head
-                # loss every step. Effective LR is implicitly N× single-head BCD
-                # — matches v3 semantics so the comparison is apples-to-apples.
-                all_head_names = ([primary_hs_cfg["name"]]
-                                  + [hs["name"] for hs in bcd_head_cfgs])
-                losses = [
-                    head_compute_loss(head_models[n], head_logits[n], batch, y_t,
-                                      class_weights=cw)
-                    for n in all_head_names if n in head_logits
-                ]
-                if not losses:
-                    continue
-                loss = sum(losses)
-                if hasattr(bridge, "modify_loss"):
-                    loss = bridge.modify_loss(loss)
-                opt.zero_grad(); loss.backward(); opt.step()
-                total_loss += loss.item() * len(y_t)
-                total_n    += len(y_t)
-                continue
-            else:
-                if bcd_head_cfgs and _random() < bcd_prob:
-                    chosen_hs = choice(bcd_head_cfgs)
+            with _amp_ctx(cfg, device):
+                if is_bilateral:
+                    side_embs  = {
+                        side: encode_embedding(src, batch, side, towers, stage_models, cfg_stages, device)
+                        for side, src in inputs.items()
+                    }
+                    local_embs = {name: bridge(side_embs)}
                 else:
-                    chosen_hs = primary_hs_cfg
-                logits      = head_logits.get(chosen_hs["name"])
-                chosen_head = head_models.get(chosen_hs["name"])
+                    local_embs = {n: towers[n](batch[n].to(device)) for n in inputs
+                                  if n in batch and torch.is_tensor(batch[n])}
+                    if len(local_embs) != len(inputs):
+                        continue
+                    local_embs[name] = bridge(list(local_embs[n] for n in inputs))
 
-            if logits is None:
+                head_logits = {
+                    hs["name"]: head_models[hs["name"]](local_embs[hs["input"]])
+                    for hs in head_stage_cfgs
+                    if hs["input"] in local_embs
+                }
+
+                if is_bilateral or phase == "fused_warmup":
+                    logits      = head_logits.get(primary_hs_cfg["name"])
+                    chosen_head = head_models.get(primary_hs_cfg["name"])
+                    if logits is not None:
+                        loss = head_compute_loss(chosen_head, logits, batch, y_t, class_weights=cw)
+                elif phase == "tower_warmup" and bcd_head_cfgs:
+                    losses = [
+                        head_compute_loss(head_models[hs["name"]],
+                                          head_logits[hs["name"]], batch, y_t,
+                                          class_weights=cw)
+                        for hs in bcd_head_cfgs if hs["name"] in head_logits
+                    ]
+                    if losses:
+                        loss = sum(losses) / len(losses)
+                elif tower_loss_mode == "all_losses" and bcd_head_cfgs:
+                    # All-losses (v3 phase 3 control): sum primary + every aux head
+                    # loss every step. Effective LR is implicitly N× single-head BCD
+                    # — matches v3 semantics so the comparison is apples-to-apples.
+                    all_head_names = ([primary_hs_cfg["name"]]
+                                      + [hs["name"] for hs in bcd_head_cfgs])
+                    losses = [
+                        head_compute_loss(head_models[n], head_logits[n], batch, y_t,
+                                          class_weights=cw)
+                        for n in all_head_names if n in head_logits
+                    ]
+                    if losses:
+                        loss = sum(losses)
+                else:
+                    if bcd_head_cfgs and _random() < bcd_prob:
+                        chosen_hs = choice(bcd_head_cfgs)
+                    else:
+                        chosen_hs = primary_hs_cfg
+                    logits      = head_logits.get(chosen_hs["name"])
+                    chosen_head = head_models.get(chosen_hs["name"])
+                    if logits is not None:
+                        loss = head_compute_loss(chosen_head, logits, batch, y_t, class_weights=cw)
+
+                if loss is not None and hasattr(bridge, "modify_loss"):
+                    loss = bridge.modify_loss(loss)
+
+            if loss is None:
                 continue
-            loss = head_compute_loss(chosen_head, logits, batch, y_t, class_weights=cw)
-            if hasattr(bridge, "modify_loss"):
-                loss = bridge.modify_loss(loss)
+
             opt.zero_grad(); loss.backward(); opt.step()
-            if logits.dim() >= 2:
+
+            if logits is not None and logits.dim() >= 2:
                 total_correct += int((logits.argmax(1) == y_t).sum())
-            total_loss    += loss.item() * len(y_t)
-            total_n       += len(y_t)
+            total_loss += loss.item() * len(y_t)
+            total_n    += len(y_t)
 
         tr_loss = total_loss / total_n if total_n else nan
         tr_acc  = total_correct / total_n if total_n else nan

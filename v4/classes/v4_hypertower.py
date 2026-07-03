@@ -359,21 +359,28 @@ def main():
 
         if save_predictions and eval_stage_preds:
             # Collect all unique entity_ids across val+test sets of all folds.
+            # Preserve the natural dtype of y so regression targets keep their
+            # fractional values (casting to int silently rounds VF_MD).
             seen, all_ids, id_to_y = set(), [], {}
+            y_is_float = False
             for fp in eval_stage_preds:
                 for eid, y in zip(fp["val_ids"], fp["val_y"]):
                     k = str(eid)
                     if k not in seen:
                         seen.add(k); all_ids.append(eid)
-                    id_to_y[k] = int(y)
+                    y_is_float = y_is_float or np.issubdtype(np.asarray(y).dtype, np.floating)
+                    id_to_y[k] = float(y) if y_is_float else int(y)
                 if fp.get("test_ids"):
                     for eid, y in zip(fp["test_ids"], fp["test_y"]):
                         k = str(eid)
                         if k not in seen:
                             seen.add(k); all_ids.append(eid)
-                        id_to_y[k] = int(y)
+                        y_is_float = y_is_float or np.issubdtype(np.asarray(y).dtype, np.floating)
+                        id_to_y[k] = float(y) if y_is_float else int(y)
 
-            y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
+            sentinel = float("nan") if y_is_float else -1
+            dtype    = np.float64 if y_is_float else np.int64
+            y_true = np.array([id_to_y.get(str(e), sentinel) for e in all_ids], dtype=dtype)
             store  = PredictionStore(n_folds=len(eval_stage_preds), n_classes=num_classes)
             store.register_phase(
                 phase=eval_stage,
@@ -402,19 +409,24 @@ def main():
             for phase, phase_preds in all_phase_preds.items():
                 emb_dim = phase_preds[0]["val_z"].shape[-1]
                 seen, all_ids, id_to_y = set(), [], {}
+                y_is_float = False
                 for fp in phase_preds:
                     for eid, y in zip(fp["val_ids"], fp["val_y"]):
                         k = str(eid)
                         if k not in seen:
                             seen.add(k); all_ids.append(eid)
-                        id_to_y[k] = int(y)
+                        y_is_float = y_is_float or np.issubdtype(np.asarray(y).dtype, np.floating)
+                        id_to_y[k] = float(y) if y_is_float else int(y)
                     if fp.get("test_ids"):
                         for eid, y in zip(fp["test_ids"], fp["test_y"]):
                             k = str(eid)
                             if k not in seen:
                                 seen.add(k); all_ids.append(eid)
-                            id_to_y[k] = int(y)
-                y_true = np.array([id_to_y.get(str(e), -1) for e in all_ids], dtype=np.int64)
+                            y_is_float = y_is_float or np.issubdtype(np.asarray(y).dtype, np.floating)
+                            id_to_y[k] = float(y) if y_is_float else int(y)
+                sentinel = float("nan") if y_is_float else -1
+                dtype    = np.float64 if y_is_float else np.int64
+                y_true = np.array([id_to_y.get(str(e), sentinel) for e in all_ids], dtype=dtype)
                 fstore.register_phase(phase=phase, entity_ids=all_ids, y_true=y_true)
                 fstore.register_head(phase=phase, head=f"{phase}_embedding",
                                      n_epochs=1, embedding_dim=emb_dim)

@@ -1,0 +1,46 @@
+[
+  {
+    "_note": "F2 block 1 — basic backbones, ImageNet pretrained, image-only, single-eye, patient-grouped 5-fold CV. VGG16. Replicates v3 phase 1 imageonly_vgg16 in the v4 pipeline.",
+    "run_name": "experiments/backbone_replication/basic_vgg16",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "vgg16", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "F2 block 1 — MobileNetV2 (ImageNet, img-only, single-eye).",
+    "run_name": "experiments/backbone_replication/basic_mobilenet_v2",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "mobilenet_v2", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "F2 block 1 — DenseNet121 (ImageNet, img-only, single-eye).",
+    "run_name": "experiments/backbone_replication/basic_densenet121",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "densenet121", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "F2 block 1 — InceptionV3 (ImageNet, img-only, single-eye). NB: Inception expects 299x299 input — backbone_transform_config auto-overrides crop_size to 299 for inception_v3.",
+    "run_name": "experiments/backbone_replication/basic_inception_v3",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "inception_v3", "freeze_ratio": 0.0 } }
+    }
+  },
+
+  {
+    "_note": "F2 block 1 — ResNet50 ImageNet-pretrained (the unfrozen ImageNet R50, not refugelike). Anchor for the basic-backbone comparison.",
+    "run_name": "experiments/backbone_replication/basic_resnet50",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "resnet50", "freeze_ratio": 0.0 } }
+    }
+  }
+]

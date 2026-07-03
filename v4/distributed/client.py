@@ -168,20 +168,28 @@ def _gpu_info() -> str:
 # rsync helpers
 # ──────────────────────────────────────────────────────────────
 
-def _rsync(src: str, dst: str, delete: bool = False):
+def _rsync(src: str, dst: str, delete: bool = False,
+           excludes: list[str] | None = None):
     cmd = ["rsync", "-az", "--info=progress2"]
     if delete:
         cmd.append("--delete")
+    for pat in (excludes or []):
+        cmd.append(f"--exclude={pat}")
     cmd += [src, dst]
     subprocess.run(cmd, check=True)
 
 
 def _sync_code(server_ssh: str, server_path: str, local_path: str):
-    """Pull v4/ source from server → local (overwrites local changes)."""
+    """Pull v4/ source from server → local (overwrites local changes).
+
+    results/ is excluded so the client never overwrites or deletes its own
+    per-job output directory, and so it never pulls down the full corpus of
+    historical results from the server.
+    """
     src = f"{server_ssh}:{server_path}/v4/"
     dst = f"{local_path}/v4/"
     Path(dst).mkdir(parents=True, exist_ok=True)
-    _rsync(src, dst, delete=True)
+    _rsync(src, dst, delete=True, excludes=["results/"])
 
 
 def _upload_results(server_ssh: str, server_path: str, local_path: str,

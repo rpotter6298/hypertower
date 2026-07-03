@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "10-rep checkpointed run of the production bilateral img+cd ensemble at the refugelike R50 backbone (headline configuration). Per-fold tower and stage_models state_dicts saved under each rep's checkpoints/foldN/ directory. Used for F8 explainability: reconstructing per-tower predictions at the nt (eye) and hb (patient) levels so we can compare img-tower-only, cd-tower-only, eye-fusion, and patient-fusion outputs on the headline backbone.",
+    "run_name": "experiments/explainability/ensemble_refugelike_ckpt",
+    "reps": 10,
+    "overrides": {
+      "save_checkpoints": true
+    }
+  }
+]

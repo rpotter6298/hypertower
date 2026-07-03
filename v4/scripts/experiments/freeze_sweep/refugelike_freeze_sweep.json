@@ -1,8 +1,8 @@
 [
   {
-    "_note": "refugelike (resnet50 + REFUGE fundus pretraining), freeze stem only (1/5 blocks). Tests whether even minimal anchoring helps stability.",
+    "_note": "refugelike (resnet50 + REFUGE fundus pretraining), freeze stem only (1/5 blocks). Tests whether even minimal anchoring helps stability. Bumped to 10 reps for the methods ablation table.",
     "run_name": "experiments/freeze_sweep/refugelike_freeze20",
-    "reps": 3,
+    "reps": 10,
     "tower_overrides": {
       "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.2 } }
     }
@@ -18,11 +18,20 @@
   },
 
   {
-    "_note": "Freeze stem + layer1 + layer2 (3/5 blocks). Only the deep semantic layers adapt — most aggressive practical setting before model loses capacity.",
+    "_note": "Freeze stem + layer1 + layer2 (3/5 blocks). Only the deep semantic layers adapt — most aggressive practical setting before model loses capacity. Bumped to 10 reps for the methods ablation table.",
     "run_name": "experiments/freeze_sweep/refugelike_freeze60",
-    "reps": 3,
+    "reps": 10,
     "tower_overrides": {
       "img": { "args": { "backbone": "refugelike", "freeze_ratio": 0.6 } }
+    }
+  },
+
+  {
+    "_note": "Fully frozen backbone (freeze_ratio=1.0) — image features are entirely fixed at the REFUGE-pretrained state, only the L1 bridge and downstream heads adapt. Provides the extreme end of the freeze-ratio sweep for the methods ablation table.",
+    "run_name": "experiments/freeze_sweep/refugelike_freeze100",
+    "reps": 10,
+    "tower_overrides": {
+      "img": { "args": { "backbone": "refugelike", "freeze_ratio": 1.0 } }
     }
   }
 ]

@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "F2 block 2 — Anonymous CV variant of the refugelike R50 image-only single-eye baseline. split_identity_level=0 disables patient-level fold grouping (v4_hypertower.py:254-256); fold assignment becomes patient-anonymous, allowing the two eyes of one patient to fall on opposite sides of the train/test split. Mirrors v3 phase 2 imageonly_resnet50_leaky. Same backbone, same architecture, same seed/fold_seed as the F2 block-3 baseline (refugelike img-only single-eye); only the grouping rule changes. The gap baseline→anonymous quantifies the patient-anonymous CV inflation.",
+    "run_name": "experiments/backbone_replication/anonymous_cv_refugelike",
+    "reps": 10,
+    "overrides": {
+      "split_identity_level": 0
+    }
+  }
+]

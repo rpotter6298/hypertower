@@ -1,8 +1,10 @@
-"""F8 - Explainability figures from the V2-M checkpointed v4 run.
+"""F8 - Explainability figures from the R50 checkpointed v4 run.
 
 Sources predictions and Grad-CAM panels exclusively from the
-``experiments/explainability/ensemble_v2m_ckpt`` run (img+cd ensemble with the
-refuge_efficientnet_v2_m backbone, save_checkpoints=true).
+``experiments/explainability/ensemble_refugelike_ckpt`` run (img+cd ensemble
+with the refugelike R50 backbone, save_checkpoints=true). rep00 (seed=1234)
+is the single rep used for the figure; matches the headline configuration in
+section 3.
 
 GradCAM machinery lives in ``v4.classes.accessory.explainability``; PAPILA
 specific knowledge (disc contour rasterisation, OS→OD orientation flip) is
@@ -33,7 +35,7 @@ from v4.figures.util.loaders import REPO_ROOT
 
 OUT_DIR = Path(__file__).parent / "output"
 GRADCAM_DIR = OUT_DIR / "F8_gradcam"
-V4_CKPT_RUN = REPO_ROOT / "v4" / "results" / "experiments" / "explainability" / "ensemble_v2m_ckpt" / "binary"
+V4_CKPT_RUN = REPO_ROOT / "v4" / "results" / "experiments" / "explainability" / "ensemble_refugelike_ckpt" / "rep00" / "binary"
 
 LABEL_NAMES = {0: "Normal", 1: "Glaucoma"}
 EVENT_ORDER = [
@@ -43,11 +45,11 @@ EVENT_ORDER = [
 ]
 EVENT_LABELS = {
     "full_correction": "Both wrong -> fused right",
-    "img_assist": "Image right, MD wrong",
-    "md_assist": "MD right, image wrong",
+    "img_assist": "Image right, clinical wrong",
+    "md_assist": "Clinical right, image wrong",
     "full_error": "Both right -> fused wrong",
-    "img_drag": "MD right, image wrong -> fused wrong",
-    "md_drag": "Image right, MD wrong -> fused wrong",
+    "img_drag": "Clinical right, image wrong -> fused wrong",
+    "md_drag": "Image right, clinical wrong -> fused wrong",
     "concordant_correct": "All correct",
     "concordant_wrong": "All wrong",
 }
@@ -339,6 +341,8 @@ def make_fusion_event_panel(split: str = "test") -> None:
     ax.invert_yaxis()
     ax.set_xlabel("Count")
     ax.set_title("Fusion event taxonomy", fontsize=10, fontweight="bold")
+    max_count = max(display_counts[k] for k in bars) if bars else 0
+    ax.set_xlim(0, max_count * 1.10 + 1)
     for yi, k in enumerate(bars):
         ax.text(display_counts[k] + 0.8, yi, str(int(display_counts[k])),
                 va="center", fontsize=8)
@@ -346,7 +350,7 @@ def make_fusion_event_panel(split: str = "test") -> None:
     ax = fig.add_subplot(gs[0, 1])
     per_fold = pd.DataFrame(
         {
-            "fold": [f"{r}/{f}" for (r, f), _ in fold_groups],
+            "fold": [str(f) for (_, f), _ in fold_groups],
             "positive": [sum((g["event_type"] == k).sum() for k in positive_keys) for _, g in fold_groups],
             "negative": [sum((g["event_type"] == k).sum() for k in negative_keys) for _, g in fold_groups],
         }
@@ -437,10 +441,6 @@ def make_fusion_event_panel(split: str = "test") -> None:
     ax.legend(handles=point_handles + shade_handles, ncol=5, fontsize=7,
               loc="upper center", bbox_to_anchor=(0.5, -0.14), frameon=False)
 
-    fig.suptitle(
-        f"S8a - Checkpoint Fusion Events ({split}; AUC={auc:.3f}, n={len(df)})",
-        fontsize=12, fontweight="bold",
-    )
     out = OUT_DIR / "S8a_comparison_panel.png"
     fig.savefig(out, dpi=180, bbox_inches="tight")
     plt.close(fig)
@@ -450,7 +450,7 @@ def make_fusion_event_panel(split: str = "test") -> None:
 def make_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
     """S8e clinical permutation importance via the cd-tower → cd_aux head.
 
-    Isolates the clinical-only prediction path at the V2-M ckpt run, then
+    Isolates the clinical-only prediction path at the R50 ckpt run, then
     column-shuffles the encoded clinical vector to measure per-feature AUC
     drop. Per-original-column grouping comes from
     ``ClinicalDataView.feature_groups`` (one-hot encoded dims for a
@@ -590,7 +590,7 @@ def make_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
     ax.set_xlabel("Mean AUC drop on shuffling (averaged across folds)", fontsize=10)
     ax.axvline(0, color="black", linewidth=0.7)
     ax.set_title(
-        f"S8e — Clinical permutation importance (cd-only head, V2-M ckpt run)\n"
+        f"S8e — Clinical permutation importance (cd-only head, R50 ckpt run)\n"
         f"baseline AUC = {baseline_mean:.3f}; n_permutations = {n_permutations}",
         fontsize=10, fontweight="bold",
     )
@@ -690,6 +690,60 @@ def _disc_centred_patch_array(
     else:
         patch_out = np.array(Image.fromarray(patch.astype(np.uint8)).resize((out, out), Image.BILINEAR))
     return patch_out.astype(np.float32), out * disc_r / (2 * half)
+
+
+QUAD_ORDER = ("ST", "SN", "IT", "IN")  # superotemporal, superonasal, inferotemporal, inferonasal
+
+
+def _quadrant_fractions(
+    cam: np.ndarray,
+    disc_mask: np.ndarray,
+    *,
+    peri_inner: float = 1.0,
+    peri_outer: float = 2.0,
+) -> tuple[dict[str, float], dict[str, float], dict[str, float]] | tuple[None, None, None]:
+    """Per-quadrant Grad-CAM fractions in OD-oriented coordinates, for three
+    region scopes.
+
+    Quadrant boundaries are the disc-mask centroid (cx, cy). In the OD-oriented
+    frame nasal is left (x < cx) and temporal is right (x > cx); superior is
+    top (y < cy) and inferior is bottom (y > cy):
+
+        ST = x > cx,  y < cy
+        SN = x < cx,  y < cy
+        IT = x > cx,  y > cy
+        IN = x < cx,  y > cy
+
+    Three region scopes are returned:
+        disc_q : fractions of CAM intensity that fall inside the GT disc mask
+        peri_q : fractions inside a peri-disc annulus of disc-radius units
+                 (peri_inner to peri_outer, default 1x-2x), excluding the disc
+        full_q : fractions over the entire image
+    Each dict sums to 1 (within floating-point error). Returns (None, None, None)
+    if the disc mask is empty.
+    """
+    if disc_mask is None or disc_mask.sum() == 0:
+        return None, None, None
+    ys, xs = np.where(disc_mask)
+    cy = float(ys.mean()); cx = float(xs.mean())
+    disc_r = float(np.sqrt(disc_mask.sum() / np.pi))
+    h, w = cam.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    peri_mask = (dist >= peri_inner * disc_r) & (dist <= peri_outer * disc_r) & ~disc_mask
+    quads = {
+        "ST": (xx > cx) & (yy < cy),
+        "SN": (xx < cx) & (yy < cy),
+        "IT": (xx > cx) & (yy > cy),
+        "IN": (xx < cx) & (yy > cy),
+    }
+    disc_total = float(cam[disc_mask].sum()) + 1e-8
+    peri_total = float(cam[peri_mask].sum()) + 1e-8
+    full_total = float(cam.sum()) + 1e-8
+    disc_q = {k: float(cam[disc_mask & q].sum()) / disc_total for k, q in quads.items()}
+    peri_q = {k: float(cam[peri_mask & q].sum()) / peri_total for k, q in quads.items()}
+    full_q = {k: float(cam[q].sum())             / full_total for k, q in quads.items()}
+    return disc_q, peri_q, full_q
 
 
 def _annotate_nasal_temporal(ax, *, fontsize: int = 9, color: str = "white",
@@ -868,6 +922,10 @@ def _make_oriented_gradcam(n_grid: int = 16, alpha: float = 0.45,
     disc_patch_count: dict[tuple[str, str], int] = {}
     disc_radius_sum: dict[tuple[str, str], float] = {}
     disc_frac_sum: dict[tuple[str, str], float] = {}
+    # Per-eye quadrant fractions for three region scopes; aggregated per cell.
+    quad_disc_list: dict[tuple[str, str], list[dict[str, float]]] = {}
+    quad_peri_list: dict[tuple[str, str], list[dict[str, float]]] = {}
+    quad_full_list: dict[tuple[str, str], list[dict[str, float]]] = {}
     examples: dict[tuple[str, str], tuple[np.ndarray, int, str, int]] = {}
 
     fold_range = range(cfg.get("folds", 5))
@@ -927,6 +985,11 @@ def _make_oriented_gradcam(n_grid: int = 16, alpha: float = 0.45,
                     disc_frac_sum[key] = disc_frac_sum.get(key, 0.0) + float(
                         cam_np[roi_mask].sum() / (cam_np.sum() + 1e-8)
                     )
+                    disc_q, peri_q, full_q = _quadrant_fractions(cam_np, roi_mask)
+                    if disc_q is not None:
+                        quad_disc_list.setdefault(key, []).append(disc_q)
+                        quad_peri_list.setdefault(key, []).append(peri_q)
+                        quad_full_list.setdefault(key, []).append(full_q)
                     if key not in examples:
                         ov = overlay_gradcam(pil_oriented, cam_np, alpha)
                         ov_small = np.array(ov.resize(cam_np.shape[::-1], Image.BILINEAR))
@@ -1019,6 +1082,32 @@ def _make_oriented_gradcam(n_grid: int = 16, alpha: float = 0.45,
     }
     if mean_patches:
         _make_oriented_disc_detail(mean_patches, examples, GRADCAM_DIR / "disc_attention_detail.png")
+
+    # Per-quadrant CAM fractions (within-disc and full-image scopes).
+    # One CSV row per (class, outcome, scope, quadrant) cell, with mean and SD
+    # computed over the per-eye fractions in that cell.
+    rows = []
+    for key in sorted(quad_disc_list.keys()):
+        cls_name, outcome = key
+        n_eyes = len(quad_disc_list[key])
+        for scope_label, scope_list in (("disc", quad_disc_list[key]),
+                                        ("peri", quad_peri_list[key]),
+                                        ("full", quad_full_list[key])):
+            for q in QUAD_ORDER:
+                vals = np.array([d[q] for d in scope_list], dtype=np.float64)
+                rows.append({
+                    "class":    cls_name,
+                    "outcome":  outcome,
+                    "scope":    scope_label,
+                    "quadrant": q,
+                    "n_eyes":   n_eyes,
+                    "mean":     float(vals.mean()),
+                    "sd":       float(vals.std(ddof=1)) if n_eyes > 1 else float("nan"),
+                })
+    if rows:
+        out_csv = OUT_DIR / "F8_quadrant_fractions.csv"
+        pd.DataFrame(rows).to_csv(out_csv, index=False)
+        print(f"saved quadrant fractions: {out_csv}")
 
 
 def make_oriented_gradcam(n_grid: int = 16, alpha: float = 0.45,

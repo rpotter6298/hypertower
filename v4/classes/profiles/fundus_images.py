@@ -650,6 +650,177 @@ def build_geometry_loader(source: str, **kwargs):
     raise NotImplementedError(f"build_geometry_loader: source={source!r} not implemented")
 
 
+class _GTContourBboxLoader:
+    """Disc bounding-box loader from PAPILA expert disc contours.
+
+    Computes a square bbox centred on the disc, expanded by ``margin`` ×
+    max(disc_w, disc_h). Returned bboxes are in original-image pixel coords
+    and may extend past image bounds (clip at crop time).
+    """
+
+    def __init__(
+        self,
+        contour_dir: str | Path,
+        *,
+        margin:      float = 2.5,
+        expert:      int   = 1,
+    ) -> None:
+        self._contour_dir = Path(contour_dir)
+        self._margin      = float(margin)
+        self._expert      = int(expert)
+        self._cache: dict[tuple, tuple[int, int, int, int] | None] = {}
+
+    def reset_cache(self) -> None:
+        self._cache.clear()
+
+    def precompute(self, samples: Iterable[Tuple[int, str, Path]]) -> None:
+        for pid, eye, _ in list(samples):
+            key = (int(pid), str(eye))
+            if key in self._cache:
+                continue
+            self._cache[key] = self._compute_bbox(*key)
+
+    def bbox_for(self, pid, eye) -> tuple[int, int, int, int] | None:
+        key = (int(pid), str(eye))
+        if key not in self._cache:
+            self._cache[key] = self._compute_bbox(*key)
+        return self._cache[key]
+
+    def _compute_bbox(self, pid: int, eye: str) -> tuple[int, int, int, int] | None:
+        path = self._contour_dir / f"RET{pid:03d}{eye}_disc_exp{self._expert}.txt"
+        if not path.exists():
+            return None
+        try:
+            arr = np.loadtxt(str(path), dtype=np.float32)
+        except Exception:
+            return None
+        if arr.ndim == 1:
+            arr = arr.reshape(-1, 2)
+        if arr.shape[0] < 3:
+            return None
+        return _expand_bbox_from_points(arr[:, 0], arr[:, 1], self._margin)
+
+
+class _UNetBboxLoader:
+    """Disc bounding-box loader from U-Net predicted masks.
+
+    Reuses _PapilaUNetMaskPipeline for per-fold fine-tune + inference.
+    """
+
+    def __init__(
+        self,
+        weights_path: str | Path,
+        *,
+        contour_dir:         str | Path,
+        margin:              float = 2.5,
+        unet_size:           int   = 512,
+        normalize:           str   = "per_image",
+        threshold:           float = 0.5,
+        finetune_epochs:     int   = 0,
+        finetune_lr:         float = 1e-5,
+        finetune_batch_size: int   = 4,
+        device:              str | None = None,
+    ) -> None:
+        self._margin    = float(margin)
+        self._unet_size = int(unet_size)
+        self._pipeline  = _PapilaUNetMaskPipeline(
+            weights_path,
+            contour_dir=contour_dir,
+            unet_size=unet_size,
+            normalize=normalize,
+            threshold=threshold,
+            finetune_epochs=finetune_epochs,
+            finetune_lr=finetune_lr,
+            finetune_batch_size=finetune_batch_size,
+            device=device,
+        )
+        self._cache: dict[tuple, tuple[int, int, int, int] | None] = {}
+
+    def reset_cache(self) -> None:
+        self._cache.clear()
+
+    def reset_weights(self) -> None:
+        self._pipeline.reset_weights()
+
+    def finetune(self, train_samples: list) -> None:
+        self._pipeline.finetune(train_samples)
+
+    def precompute(self, samples: Iterable[Tuple[int, str, Path]]) -> None:
+        samples = list(samples)
+        if not samples:
+            return
+        # Need original-image dims to rescale mask coords back; capture per sample.
+        orig_sizes: dict[tuple, tuple[int, int]] = {}
+        for pid, eye, image_path in samples:
+            try:
+                with Image.open(image_path) as im:
+                    orig_sizes[(int(pid), str(eye))] = im.size  # (w, h)
+            except Exception:
+                continue
+        masks = self._pipeline.predict(samples)
+        for key, (disc, _cup) in masks.items():
+            ow, oh = orig_sizes.get(key, (self._unet_size, self._unet_size))
+            self._cache[key] = _bbox_from_mask(disc, ow, oh, self._margin)
+
+    def bbox_for(self, pid, eye) -> tuple[int, int, int, int] | None:
+        return self._cache.get((int(pid), str(eye)))
+
+
+def _expand_bbox_from_points(
+    xs: np.ndarray, ys: np.ndarray, margin: float
+) -> tuple[int, int, int, int]:
+    """Square bbox centred on disc centroid, half-side = margin × max(w,h) / 2."""
+    x0, x1 = float(xs.min()), float(xs.max())
+    y0, y1 = float(ys.min()), float(ys.max())
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    half   = max(x1 - x0, y1 - y0) * float(margin) / 2.0
+    return (int(round(cx - half)), int(round(cy - half)),
+            int(round(cx + half)), int(round(cy + half)))
+
+
+def _bbox_from_mask(
+    mask: np.ndarray, orig_w: int, orig_h: int, margin: float,
+) -> tuple[int, int, int, int] | None:
+    """Compute original-image bbox from a binary mask at mask resolution."""
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        return None
+    sx = float(orig_w) / float(mask.shape[1])
+    sy = float(orig_h) / float(mask.shape[0])
+    return _expand_bbox_from_points(xs * sx, ys * sy, margin)
+
+
+def build_disc_bbox_loader(source: str, **kwargs):
+    """Return a disc-bbox loader for the given source.
+
+    Parameters
+    ----------
+    source : "gt" | "unet"
+
+    GT kwargs:
+        contour_dir (required), margin=2.5, expert=1
+    UNet kwargs:
+        weights_path (required), contour_dir (required),
+        margin=2.5, unet_size=512, normalize="per_image", threshold=0.5,
+        finetune_epochs=0, finetune_lr=1e-5, finetune_batch_size=4, device=None
+    """
+    if source == "gt":
+        if "contour_dir" not in kwargs:
+            raise ValueError("build_disc_bbox_loader source='gt' requires contour_dir")
+        gt_keys = {"contour_dir", "margin", "expert"}
+        return _GTContourBboxLoader(**{k: v for k, v in kwargs.items() if k in gt_keys})
+    if source == "unet":
+        if "weights_path" not in kwargs:
+            raise ValueError("build_disc_bbox_loader source='unet' requires weights_path")
+        if "contour_dir" not in kwargs:
+            raise ValueError(
+                "build_disc_bbox_loader source='unet' requires contour_dir "
+                "(needed for per-fold fine-tuning, even if finetune_epochs=0)"
+            )
+        return _UNetBboxLoader(**kwargs)
+    raise NotImplementedError(f"build_disc_bbox_loader: source={source!r} not implemented")
+
+
 def build_seg_map_loader(source: str, **kwargs):
     """Return the appropriate seg-map loader for the given source string.
 

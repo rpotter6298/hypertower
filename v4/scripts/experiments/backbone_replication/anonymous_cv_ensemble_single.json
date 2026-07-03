@@ -1,0 +1,10 @@
+[
+  {
+    "_note": "Anonymous CV variant of the single-eye img+cd L1 fusion configuration at the refugelike R50 backbone (the 'classic hypertower' eye-level fusion mode without L2 bilateral aggregation). split_identity_level=0 disables patient-level fold grouping; fold assignment becomes patient-anonymous, allowing the two eyes of one patient to fall on opposite sides of the train/test split. Mirrors the image-only anonymous_cv_refugelike run (F2 block 2) but with the clinical tower fused in at the L1 stage, so the patient-anonymous CV inflation can be quantified directly against the single-eye img+cd headline number (ensemble_single_refugelike rep-mean test AUC 0.874 at split_identity_level=1). Same backbone, towers, bridge, training schedule, and seeds as the single-eye headline; only the fold-grouping rule changes. Bilateral L2 is not included because patient-level aggregation is mechanically incompatible with patient-anonymous fold assignment.",
+    "run_name": "experiments/backbone_replication/anonymous_cv_ensemble_single_refugelike",
+    "reps": 10,
+    "overrides": {
+      "split_identity_level": 0
+    }
+  }
+]

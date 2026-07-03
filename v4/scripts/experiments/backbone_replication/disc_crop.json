@@ -1,0 +1,39 @@
+[
+  {
+    "_note": "F2 block 2 — GT disc-contour crop. R50 refugelike, image-only, single-eye, patient-grouped 5-fold CV. Each input image is cropped to a square bbox centred on the GT disc contour with margin=2.5 (matching v3 phase 2 imageonly_resnet50_gtcrop_2.5). The crop happens in original image coords before the standard 256-resize + 224-center-crop transform pipeline runs. Eyes with no contour file fall back to the un-cropped full image.",
+    "run_name": "experiments/backbone_replication/gtcrop_refugelike",
+    "reps": 10,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone":     "refugelike",
+          "freeze_ratio": 0.0,
+          "crop_source":  "gt",
+          "crop_kwargs":  { "margin": 2.5, "expert": 1 }
+        }
+      }
+    }
+  },
+
+  {
+    "_note": "F2 block 2 — U-Net disc-mask crop. R50 refugelike, image-only, single-eye, patient-grouped 5-fold CV. Each input image is cropped to a square bbox centred on the U-Net-predicted disc mask with margin=2.5 (matching v3 phase 2 imageonly_resnet50_unetcrop_2.5). U-Net is loaded from the base REFUGE checkpoint and NOT fine-tuned per fold (finetune_epochs=0) to keep this an apples-to-apples preprocessing-only ablation. Eyes where U-Net predicts no disc fall back to the un-cropped full image.",
+    "run_name": "experiments/backbone_replication/unetcrop_refugelike",
+    "reps": 10,
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone":     "refugelike",
+          "freeze_ratio": 0.0,
+          "crop_source":  "unet",
+          "crop_kwargs":  {
+            "margin":          2.5,
+            "weights_path":    "models/v2/refuge/segmentation/per_image/best.pt",
+            "unet_size":       512,
+            "threshold":       0.5,
+            "finetune_epochs": 0
+          }
+        }
+      }
+    }
+  }
+]

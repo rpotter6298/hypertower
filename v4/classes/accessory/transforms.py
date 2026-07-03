@@ -76,39 +76,75 @@ class ImageTransformConfig:
         return transforms.Compose(ops)
 
 
-def backbone_transform_config(backbone_name: str, augment: bool = True) -> ImageTransformConfig:
-    """Build an ImageTransformConfig using the backbone's default normalisation stats."""
+def backbone_transform_config(
+    backbone_name: str,
+    augment:       bool       = True,
+    crop_size:     int | None = None,
+    resize_size:   int | None = None,
+) -> ImageTransformConfig:
+    """Build an ImageTransformConfig using the backbone's default normalisation stats.
+
+    crop_size / resize_size override the backbone's default input resolution. When
+    crop_size is overridden but resize_size is not, resize_size is scaled
+    proportionally (8/7 ratio, matching the standard 224 → 256 pattern).
+    """
     key = (backbone_name or "").lower()
     if _is_timm_backbone(key):
         # ConvNeXt-V2 and other timm models we currently expose are all
         # pretrained with standard ImageNet stats at 224×224.
-        return ImageTransformConfig(crop_size=224, mean=IMAGENET_MEAN,
-                                    std=IMAGENET_STD, augment=augment)
-    if key not in BACKBONES:
-        raise ValueError(f"Unknown backbone '{backbone_name}'.")
-    spec = BACKBONES[key]
-    mean = getattr(spec.weights_default, "meta", {}).get("mean", IMAGENET_MEAN)
-    std  = getattr(spec.weights_default, "meta", {}).get("std",  IMAGENET_STD)
-    crop = 299 if key == "inception_v3" else 224
-    return ImageTransformConfig(crop_size=crop, mean=mean, std=std, augment=augment)
+        mean, std = IMAGENET_MEAN, IMAGENET_STD
+        default_crop = 224
+    else:
+        if key not in BACKBONES:
+            raise ValueError(f"Unknown backbone '{backbone_name}'.")
+        spec = BACKBONES[key]
+        mean = getattr(spec.weights_default, "meta", {}).get("mean", IMAGENET_MEAN)
+        std  = getattr(spec.weights_default, "meta", {}).get("std",  IMAGENET_STD)
+        default_crop = 299 if key == "inception_v3" else 224
+
+    crop   = crop_size   if crop_size   is not None else default_crop
+    resize = resize_size if resize_size is not None else round(crop * 8 / 7)
+    return ImageTransformConfig(crop_size=crop, resize_size=resize,
+                                mean=mean, std=std, augment=augment)
 
 
-def build_backbone_transform(backbone_name: str, augment: bool = True) -> transforms.Compose:
-    return backbone_transform_config(backbone_name, augment=augment).build()
+def build_backbone_transform(
+    backbone_name: str,
+    augment:       bool       = True,
+    crop_size:     int | None = None,
+    resize_size:   int | None = None,
+) -> transforms.Compose:
+    return backbone_transform_config(
+        backbone_name, augment=augment,
+        crop_size=crop_size, resize_size=resize_size,
+    ).build()
 
 
-def build_eval_transform(backbone_name: str) -> transforms.Compose:
+def build_eval_transform(
+    backbone_name: str,
+    crop_size:     int | None = None,
+    resize_size:   int | None = None,
+) -> transforms.Compose:
     """Deterministic eval transform — no augmentation, backbone-matched normalisation."""
-    return build_backbone_transform(backbone_name, augment=False)
+    return build_backbone_transform(
+        backbone_name, augment=False,
+        crop_size=crop_size, resize_size=resize_size,
+    )
 
 
 def build_split_transforms(
-    backbone_name: str, augment: bool = True
+    backbone_name: str,
+    augment:       bool       = True,
+    crop_size:     int | None = None,
+    resize_size:   int | None = None,
 ) -> tuple[transforms.Compose, transforms.Compose]:
     """Return (precache, postcache) transform pair for tensor-cached image towers.
 
     precache  : PIL → CHW float32 in [0, 1]   (deterministic, run once at fill)
     postcache : tensor → augmented + normalized tensor   (run per batch)
     """
-    cfg = backbone_transform_config(backbone_name, augment=augment)
+    cfg = backbone_transform_config(
+        backbone_name, augment=augment,
+        crop_size=crop_size, resize_size=resize_size,
+    )
     return cfg.build_precache(), cfg.build_postcache()

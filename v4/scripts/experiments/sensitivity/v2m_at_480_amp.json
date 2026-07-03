@@ -1,0 +1,24 @@
+[
+  {
+    "_note": "Sensitivity: refuge V2-M ensemble (img + cd, bilateral, ortho-w0.1 inner-Hadamard not applied here — matches the plain V2-M ensemble baseline at 224 from efficientnet/refuge_efficientnetv2_m which gave 0.9132 ± 0.019). This run feeds EfficientNetV2-M at its NATIVE 480x480 input resolution instead of the pipeline default 224. Activation memory roughly 4.6x; bf16 autocast keeps bs=8 fit in 16 GB (probe peak 9.07 GB on 7800 XT). Matched seed/fold_seed (1234/100) inherited from ensemble_fused.json so reps 1-10 here pair with reps 1-10 of the 224 baseline for paired statistics. 10 reps queued — kill early if wall-clock proves prohibitive. save_checkpoints + save_predictions enabled for downstream analysis if the result is promising.",
+    "run_name": "experiments/sensitivity/v2m_at_480_amp",
+    "reps": 10,
+    "overrides": {
+      "save_checkpoints": true,
+      "save_predictions": true,
+      "training": {
+        "amp": true,
+        "amp_dtype": "bfloat16"
+      }
+    },
+    "tower_overrides": {
+      "img": {
+        "args": {
+          "backbone": "refuge_efficientnet_v2_m",
+          "freeze_ratio": 0.0,
+          "crop_size": 480
+        }
+      }
+    }
+  }
+]

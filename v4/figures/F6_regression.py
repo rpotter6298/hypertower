@@ -27,7 +27,10 @@ from sklearn.metrics import roc_curve, roc_auc_score
 from v4.figures.util.loaders import RESULTS_ROOT
 
 OUT = Path(__file__).parent / "output" / "F6_regression.png"
-RUN_DIR = RESULTS_ROOT / "reg_head" / "baseline_reg_nt50"
+# Points at the post-fix run that stores VF_MD as float64. The earlier
+# baseline_reg_nt50 run stored y_true as int64, silently rounding the
+# regression targets; do not mix the two.
+RUN_DIR = RESULTS_ROOT / "reg_head" / "baseline_reg_nt50_floaty"
 
 # Prediction-side bin boundaries
 NP_THRESH = -1.097  # mean of measured-healthy MD

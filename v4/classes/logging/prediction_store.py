@@ -6,19 +6,19 @@ FeatureStore     — records embeddings (opt-in); same structure but per-head
 
 HDF5 layout — PredictionStore
 ------------------------------
-/{phase}/logits          float32  (n_folds, n_epochs, n_samples, n_heads, n_classes)
-/{phase}/head_names      str      (n_heads,)
-/{phase}/y_true          int64    (n_samples,)
-/{phase}/entity_id_{k}  int64|str (n_samples,)  — one dataset per id component
-/{phase}/split           str      (n_folds, n_samples)
-/{phase}/loss            float32  (n_folds, n_epochs)
+/{phase}/logits          float32          (n_folds, n_epochs, n_samples, n_heads, n_classes)
+/{phase}/head_names      str              (n_heads,)
+/{phase}/y_true          int64 | float64  (n_samples,)  — float64 for regression targets, int64 otherwise
+/{phase}/entity_id_{k}  int64|str         (n_samples,)  — one dataset per id component
+/{phase}/split           str              (n_folds, n_samples)
+/{phase}/loss            float32          (n_folds, n_epochs)
 
 HDF5 layout — FeatureStore
 ---------------------------
-/{phase}/{head_name}     float32  (n_folds, n_epochs, n_samples, embedding_dim)
-/{phase}/y_true          int64    (n_samples,)
-/{phase}/entity_id_{k}  int64|str (n_samples,)
-/{phase}/split           str      (n_folds, n_samples)
+/{phase}/{head_name}     float32          (n_folds, n_epochs, n_samples, embedding_dim)
+/{phase}/y_true          int64 | float64  (n_samples,)  — float64 for regression targets, int64 otherwise
+/{phase}/entity_id_{k}  int64|str         (n_samples,)
+/{phase}/split           str              (n_folds, n_samples)
 """
 from __future__ import annotations
 
@@ -33,6 +33,18 @@ except ImportError as e:
     raise ImportError("PredictionStore requires h5py: pip install h5py") from e
 
 _STR_DT = h5py.string_dtype()
+
+
+def _coerce_y_true(y_true) -> np.ndarray:
+    """Coerce y_true to int64 for integer-typed input, float64 otherwise.
+
+    Forcing int64 unconditionally would silently round regression targets
+    (e.g. VF_MD), so we honour float input by storing as float64.
+    """
+    arr = np.asarray(y_true)
+    if np.issubdtype(arr.dtype, np.floating):
+        return arr.astype(np.float64)
+    return arr.astype(np.int64)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +64,7 @@ class _PhaseBuffer:
         n_s = len(entity_ids)
         n_h = len(head_names)
         self.entity_ids = list(entity_ids)
-        self.y_true     = np.asarray(y_true, dtype=np.int64)
+        self.y_true     = _coerce_y_true(y_true)
         self.head_names = list(head_names)
         self.n_epochs   = n_epochs
         self.logits     = np.full((n_folds, n_epochs, n_s, n_h, n_classes), np.nan, dtype=np.float32)
@@ -74,7 +86,7 @@ class _FeaturePhaseBuffer:
         n_folds:    int,
     ):
         self.entity_ids = list(entity_ids)
-        self.y_true     = np.asarray(y_true, dtype=np.int64)
+        self.y_true     = _coerce_y_true(y_true)
         self.split      = np.full((n_folds, len(entity_ids)), "", dtype=object)
         self._sid       = {str(eid): i for i, eid in enumerate(entity_ids)}
         # head_name → (buffer array, n_epochs)
@@ -148,7 +160,7 @@ class PredictionStore:
         """Register a training phase before recording begins."""
         self._phases[phase] = _PhaseBuffer(
             entity_ids=list(entity_ids),
-            y_true=np.asarray(y_true, dtype=np.int64),
+            y_true=_coerce_y_true(y_true),
             head_names=list(head_names),
             n_epochs=n_epochs,
             n_folds=self.n_folds,
@@ -306,7 +318,7 @@ class FeatureStore:
     ) -> None:
         self._phases[phase] = _FeaturePhaseBuffer(
             entity_ids=list(entity_ids),
-            y_true=np.asarray(y_true, dtype=np.int64),
+            y_true=_coerce_y_true(y_true),
             n_folds=self.n_folds,
         )
 

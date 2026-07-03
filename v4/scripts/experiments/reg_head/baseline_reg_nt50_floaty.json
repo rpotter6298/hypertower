@@ -1,0 +1,33 @@
+[
+  {
+    "_note": "Re-run of the headline VF_MD regression configuration (baseline_reg_nt50) after the PredictionStore y_true dtype fix. The previous run stored y_true as int64, silently rounding VF_MD floats to integers (introducing ~0.3 dB of rounding noise into MAE and the regression residuals). With the fix applied, regression targets are stored as float64. Matched seeds and fold_seeds to the original baseline_reg_nt50 so fold splits are identical and rep-paired comparison is meaningful. All other settings (nt epochs = 50, all four heads as RegressionHead targeting vf_md, label_filter [0,1,2] to retain Suspect, refugelike R50 backbone, bilateral L1+L2 fusion) are unchanged.",
+    "run_name": "experiments/reg_head/baseline_reg_nt50_floaty",
+    "reps": 10,
+    "overrides": {
+      "label_filter": [0, 1, 2]
+    },
+    "stage_overrides": {
+      "nt": { "epochs": 50 },
+      "img_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "cd_aux": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "nt_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      },
+      "hb_head": {
+        "module": "v4.classes.heads.regression",
+        "class":  "RegressionHead",
+        "args":   { "dropout": 0.3, "target_key": "vf_md", "loss": "mse" }
+      }
+    }
+  }
+]

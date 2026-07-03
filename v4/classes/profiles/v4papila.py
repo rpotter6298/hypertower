@@ -480,6 +480,12 @@ class ImageDataView:
         from v4.classes.profiles.fundus_images import build_seg_map_loader as _build
         return _build(source, **self._resolve_paths(kwargs))
 
+    def build_disc_bbox_loader(self, source: str, **kwargs):
+        """Return a disc bounding-box loader for crop-to-disc preprocessing."""
+        from v4.classes.profiles.fundus_images import build_disc_bbox_loader as _build
+        kwargs.setdefault("contour_dir", self._DEFAULT_CONTOUR_DIR)
+        return _build(source, **self._resolve_paths(kwargs))
+
     # ── Optional explainability hooks ────────────────────────────────────────
     #
     # These methods are consumed by v4.classes.accessory.explainability via

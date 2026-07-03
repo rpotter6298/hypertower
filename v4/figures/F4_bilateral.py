@@ -58,15 +58,15 @@ SEV_LABELS = {
     "severe": "Glaucoma — severe (VF_MD < −12)",
     "unknown": "Glaucoma — VF_MD not recorded",
 }
-SEV_ORDER = ["normal", "unknown", "early", "moderate", "severe"]
+SEV_ORDER = ["severe", "moderate", "unknown", "early", "normal"]
 SEV_ALPHA = {
-    "normal": 0.40,
-    "unknown": 0.35,
+    "normal": 0.55,
+    "unknown": 0.55,
     "early": 0.55,
-    "moderate": 0.70,
-    "severe": 0.85,
+    "moderate": 0.55,
+    "severe": 0.55,
 }
-SEV_SIZE = {"normal": 6, "unknown": 6, "early": 8, "moderate": 10, "severe": 12}
+SEV_SIZE = {"normal": 8, "unknown": 8, "early": 8, "moderate": 8, "severe": 8}
 
 # Panel grid: [row][col] = (label, run_dir, eval_stage)
 GRID = [
