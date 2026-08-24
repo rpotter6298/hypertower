@@ -1,0 +1,20 @@
+[
+  {
+    "_note": "Bilateral cd-only (eval at hb) with the four zero-importance clinical features dropped (astigmatism, dioptre_1, dioptre_2, Phakic/Pseudophakic). Pairs seed-for-seed with experiments/phase4_v4/cd_solo_bilateral so a rep-paired comparison quantifies the effect of the pruned panel at the bilateral clinical-only stage. Feeds the clinical column of the new F4 with matched features to the bilateral fusion column (ensemble_refugelike_ckpt_dropzero).",
+    "run_name": "experiments/explainability/cd_solo_bilateral_dropzero",
+    "reps": 10,
+    "overrides": {
+      "data": {
+        "args": {
+          "exclude_cols": [
+            "Axial_Length",
+            "astigmatism",
+            "dioptre_1",
+            "dioptre_2",
+            "Phakic/Pseudophakic"
+          ]
+        }
+      }
+    }
+  }
+]

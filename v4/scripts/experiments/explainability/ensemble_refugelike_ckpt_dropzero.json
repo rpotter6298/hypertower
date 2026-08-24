@@ -1,0 +1,21 @@
+[
+  {
+    "_note": "Same 10-rep checkpointed R50 ensemble as ensemble_refugelike_ckpt, but with the four clinical features that scored ~0 fused-head permutation importance dropped from the input matrix (astigmatism, dioptre_1, dioptre_2, Phakic/Pseudophakic). eyeID is not listed here because the PAPILA profile also uses it as the OD/OS index level and dropping it via exclude_cols crashes downstream indexing; since eyeID's L2 importance is exactly 0.0 in the current CSV (fused head always sees both eyes, so eyeID carries zero information at that layer), leaving it in has no measurable effect on AUC. Same seed / fold_seed defaults as the main ckpt run so results are rep-paired for direct comparison.",
+    "run_name": "experiments/explainability/ensemble_refugelike_ckpt_dropzero",
+    "reps": 10,
+    "overrides": {
+      "save_checkpoints": true,
+      "data": {
+        "args": {
+          "exclude_cols": [
+            "Axial_Length",
+            "astigmatism",
+            "dioptre_1",
+            "dioptre_2",
+            "Phakic/Pseudophakic"
+          ]
+        }
+      }
+    }
+  }
+]

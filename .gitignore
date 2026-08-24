@@ -18,3 +18,5 @@ v3/distributed/logs/*
 v4/configs/**/
 v4/distributed/logs/*
 v4/results/*
+manuscript/*
+binocular_analog/*

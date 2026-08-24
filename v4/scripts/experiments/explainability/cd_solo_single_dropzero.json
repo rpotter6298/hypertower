@@ -1,0 +1,20 @@
+[
+  {
+    "_note": "Single-eye clinical-only (no img tower, eval at cd_fuse) with the four zero-importance clinical features dropped (astigmatism, dioptre_1, dioptre_2, Phakic/Pseudophakic). Pairs seed-for-seed with experiments/phase2_v4/cd_solo_single so a rep-paired comparison quantifies the effect of the pruned panel at the clinical-only stage. Feeds the clinical column of the new F3 with matched features to the fusion column.",
+    "run_name": "experiments/explainability/cd_solo_single_dropzero",
+    "reps": 10,
+    "overrides": {
+      "data": {
+        "args": {
+          "exclude_cols": [
+            "Axial_Length",
+            "astigmatism",
+            "dioptre_1",
+            "dioptre_2",
+            "Phakic/Pseudophakic"
+          ]
+        }
+      }
+    }
+  }
+]

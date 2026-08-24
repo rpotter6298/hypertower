@@ -1,0 +1,20 @@
+[
+  {
+    "_note": "Single-eye Hadamard L1 img+cd ensemble (refugelike R50 backbone, eval at nt) with the four zero-importance clinical features dropped (astigmatism, dioptre_1, dioptre_2, Phakic/Pseudophakic). Pairs seed-for-seed with experiments/refuge_v2m_baseline/ensemble_single_refugelike so a rep-paired comparison quantifies the effect of the pruned panel at the L1 stage. Feeds the L1 Hadamard column of the new F3.",
+    "run_name": "experiments/explainability/ensemble_single_refugelike_dropzero",
+    "reps": 10,
+    "overrides": {
+      "data": {
+        "args": {
+          "exclude_cols": [
+            "Axial_Length",
+            "astigmatism",
+            "dioptre_1",
+            "dioptre_2",
+            "Phakic/Pseudophakic"
+          ]
+        }
+      }
+    }
+  }
+]

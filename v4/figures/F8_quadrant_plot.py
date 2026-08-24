@@ -101,10 +101,6 @@ def render() -> None:
     ax.set_xticks(x)
     ax.set_xticklabels([QUAD_LABEL[q] for q in QUAD_ORDER], fontsize=11)
     ax.set_ylabel("Mean fraction of full-image Grad-CAM intensity", fontsize=11)
-    ax.set_title(
-        "Image-tower Grad-CAM by optic-disc quadrant (OD-oriented; centroid-split)",
-        fontsize=12.5, fontweight="bold",
-    )
     ax.grid(axis="y", alpha=0.3, linestyle="--")
     ax.set_ylim(0, max(ax.get_ylim()[1], 0.7))
     ax.axhline(0.25, color="#888", linestyle=":", linewidth=0.8, alpha=0.6, zorder=0)

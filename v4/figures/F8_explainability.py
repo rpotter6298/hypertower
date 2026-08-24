@@ -447,6 +447,25 @@ def make_fusion_event_panel(split: str = "test") -> None:
     print(f"Saved: {out}")
 
 
+def _drop_structural_features(
+    names: list[str],
+    groups: list[list[int]],
+    drop: set[str],
+) -> tuple[list[str], list[list[int]]]:
+    """Return (names, groups) with entries in ``drop`` removed.
+
+    Encoded-vector indices are left intact - the model still sees them - but
+    we simply do not permute/report those dims. Used to hide index-level
+    columns like eyeID that appear in the clinical feature list only because
+    they double as an index level.
+    """
+    kept = [(n, g) for n, g in zip(names, groups) if n not in drop]
+    if not kept:
+        return list(names), list(groups)
+    kept_names, kept_groups = zip(*kept)
+    return list(kept_names), [list(g) for g in kept_groups]
+
+
 def make_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
     """S8e clinical permutation importance via the cd-tower → cd_aux head.
 
@@ -486,6 +505,11 @@ def make_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
             "feature_groups; skipping S8e."
         )
         return
+    # eyeID is structural (used as the OD/OS index level in DataViews), not a
+    # learned variable. Strip it from the reported permutation analysis.
+    feature_names, feature_groups = _drop_structural_features(
+        feature_names, feature_groups, drop={"eyeID"},
+    )
 
     label_filter = cfg.get("label_filter", None)
     df_mode = data.df.copy()
@@ -613,7 +637,246 @@ def make_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
     print(f"Saved: {out_csv}")
 
 
-def _build_v4_fold_modules(fold_idx: int, cfg: dict, data, device):
+def make_fused_clinical_importance(n_permutations: int = 30, seed: int = 0) -> None:
+    """S8e-b clinical permutation importance measured at the fused L2 head.
+
+    Answers a different question from the L1 (cd-only) importance: given the
+    image tower is already contributing, which clinical features still change
+    the patient-level fused prediction? For each permutation, the clinical
+    vector is re-embedded through the cd tower, fused with cached image
+    embeddings through the L1 (nt) bridge per eye, aggregated through the L2
+    (hb) bridge, and scored against the patient-level label at hb_head.
+
+    OD and OS clinical vectors are permuted together (same source-patient
+    replaces both eyes) so patient-level pairing is preserved.
+
+    Aggregation: all 10 reps of ``ensemble_refugelike_ckpt`` are looped; each
+    rep produces a per-fold mean AUC drop, averaged within-rep to a rep-level
+    drop; final bars show mean ± SD **across reps** (n=10). Baseline is the
+    rep-mean of within-rep fold-mean baseline AUCs. This matches the
+    rep-mean-of-fold-means aggregation used elsewhere in the manuscript.
+    """
+    import json
+    import torch
+    import torch.nn.functional as TF_
+    from tqdm import tqdm
+    from v4.classes.accessory.explainability import permutation_importance
+    from v4.classes.split_manager import SplitManager
+    from v4.classes.v4_hypertower import load_data, _make_loader
+    import v4.classes.v4_hypertower as orch
+
+    rep_base = V4_CKPT_RUN.parent.parent  # .../ensemble_refugelike_ckpt
+    rep_dirs = sorted(
+        p for p in rep_base.glob("rep*/binary")
+        if (p / "summary.json").exists() and (p / "checkpoints").exists()
+    )
+    if not rep_dirs:
+        print(f"[F8] make_fused_clinical_importance: no reps found under {rep_base}")
+        return
+    print(f"[F8] Fused clinical importance across {len(rep_dirs)} reps")
+
+    cfg = json.loads((rep_dirs[0] / "summary.json").read_text())["config"]
+    orch.cfg_ref = cfg
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    data = load_data(cfg)
+    clinical_view = data.matrix
+    feature_names = getattr(clinical_view, "feature_names", None)
+    feature_groups = getattr(clinical_view, "feature_groups", None)
+    if feature_names is None or feature_groups is None:
+        print("[F8] make_fused_clinical_importance: profile lacks feature_names / "
+              "feature_groups; skipping.")
+        return
+    # eyeID is structural (index level for OD/OS in DataViews), not a learned
+    # variable. Skip it in the reported analysis.
+    feature_names, feature_groups = _drop_structural_features(
+        feature_names, feature_groups, drop={"eyeID"},
+    )
+
+    label_filter = cfg.get("label_filter", None)
+    df_mode = data.df.copy()
+    if label_filter is not None:
+        df_mode = df_mode[df_mode[data.label_col].isin(label_filter)].reset_index(drop=True)
+    identity_cols = getattr(data, "identity_cols", [])
+    identity_level = cfg.get("split_identity_level", 1)
+    group_col = identity_cols[identity_level - 1] if identity_level and identity_cols else None
+    splits = SplitManager(group_col=group_col).build_plans(
+        df_mode,
+        label_col=data.label_col,
+        n_splits=cfg.get("folds", 5),
+        seed=cfg.get("fold_seed", 100),
+    )
+
+    rep_mean_drops = []      # list of (F,) arrays: within-rep fold-mean drops
+    rep_mean_baselines = []  # list of floats: within-rep fold-mean baseline AUCs
+    reference_names = None
+
+    for rep_idx, run_dir in enumerate(rep_dirs):
+        rep_cfg = json.loads((run_dir / "summary.json").read_text())["config"]
+        # matched-seed reps share the same fold-splitting seed / label_filter;
+        # verify config alignment before reusing splits computed from cfg above.
+        if rep_cfg.get("fold_seed") != cfg.get("fold_seed"):
+            print(f"[F8]   {run_dir.parent.name}: fold_seed mismatch, rebuilding splits.")
+            splits_here = SplitManager(group_col=group_col).build_plans(
+                df_mode, label_col=data.label_col,
+                n_splits=rep_cfg.get("folds", 5), seed=rep_cfg.get("fold_seed", 100),
+            )
+        else:
+            splits_here = splits
+
+        fold_results = []
+        for fold_idx in tqdm(
+            range(rep_cfg.get("folds", 5)),
+            desc=f"rep {rep_idx:02d}/{len(rep_dirs)-1}",
+            unit="fold",
+            leave=False,
+        ):
+            ckpt_dir = run_dir / "checkpoints" / f"fold{fold_idx}"
+            if not ckpt_dir.exists():
+                continue
+            towers, nt, hb, img_aux, cd_aux, hb_head = _build_v4_fold_modules(
+                fold_idx, rep_cfg, data, device, run_dir=run_dir,
+            )
+
+            split_obj = splits_here[fold_idx]
+            if split_obj.test is None:
+                del towers, nt, hb, img_aux, cd_aux, hb_head
+                continue
+            shell = data.build_shells(split_obj.test, level="patient", label_filter=label_filter)
+            loader = _make_loader(
+                shell,
+                towers,
+                batch_size=rep_cfg["training"].get("batch_size", 8),
+                shuffle=False,
+            )
+
+            cd_a_list, cd_b_list = [], []
+            z_img_a_list, z_img_b_list = [], []
+            y_list = []
+            with torch.no_grad():
+                for batch in loader:
+                    cd_a_list.append(batch["cd"]["a"].cpu().numpy())
+                    cd_b_list.append(batch["cd"]["b"].cpu().numpy())
+                    z_img_a = towers["img"](batch["img"]["a"].to(device))
+                    z_img_b = towers["img"](batch["img"]["b"].to(device))
+                    z_img_a_list.append(z_img_a.cpu().numpy())
+                    z_img_b_list.append(z_img_b.cpu().numpy())
+                    y_list.append(batch["label"].cpu().numpy())
+            if not cd_a_list:
+                del towers, nt, hb, img_aux, cd_aux, hb_head
+                continue
+            cd_a  = np.concatenate(cd_a_list).astype(np.float32)
+            cd_b  = np.concatenate(cd_b_list).astype(np.float32)
+            z_img_a_cached = torch.from_numpy(np.concatenate(z_img_a_list)).to(device)
+            z_img_b_cached = torch.from_numpy(np.concatenate(z_img_b_list)).to(device)
+            y     = np.concatenate(y_list).astype(int)
+            if len(np.unique(y)) < 2:
+                del towers, nt, hb, img_aux, cd_aux, hb_head
+                continue
+
+            F = cd_a.shape[1]
+            X_wide = np.concatenate([cd_a, cd_b], axis=1)  # (N, 2F)
+            wide_groups = [[c for c in g] + [c + F for c in g] for g in feature_groups]
+
+            def score_fn(X_in: np.ndarray) -> float:
+                cd_a_in = torch.from_numpy(X_in[:, :F]).to(device)
+                cd_b_in = torch.from_numpy(X_in[:, F:]).to(device)
+                with torch.no_grad():
+                    z_cd_a = towers["cd"](cd_a_in)
+                    z_cd_b = towers["cd"](cd_b_in)
+                    z_nt_a = nt([z_img_a_cached, z_cd_a])
+                    z_nt_b = nt([z_img_b_cached, z_cd_b])
+                    z_hb   = hb({"a": z_nt_a, "b": z_nt_b})
+                    logits = hb_head(z_hb)
+                    probs  = TF_.softmax(logits, dim=1).cpu().numpy()
+                try:
+                    return roc_auc_score(y, probs[:, 1])
+                except Exception:
+                    return float("nan")
+
+            result = permutation_importance(
+                score_fn=score_fn,
+                X=X_wide,
+                groups=wide_groups,
+                n_permutations=n_permutations,
+                seed=seed + rep_idx * 100 + fold_idx,
+                feature_names=feature_names,
+            )
+            fold_results.append(result)
+
+            del towers, nt, hb, img_aux, cd_aux, hb_head
+            del z_img_a_cached, z_img_b_cached
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        if not fold_results:
+            print(f"[F8]   {run_dir.parent.name}: no folds produced usable data; skipping rep.")
+            continue
+
+        rep_drops_matrix = np.stack([r["mean_drop"] for r in fold_results])
+        rep_mean_drops.append(rep_drops_matrix.mean(axis=0))
+        rep_mean_baselines.append(float(np.mean([r["baseline"] for r in fold_results])))
+        if reference_names is None:
+            reference_names = fold_results[0]["feature_names"]
+        print(f"[F8]   {run_dir.parent.name}: baseline={rep_mean_baselines[-1]:.4f} "
+              f"(n_folds={len(fold_results)})")
+
+    if not rep_mean_drops:
+        print("[F8] make_fused_clinical_importance: no reps produced usable data; skipping.")
+        return
+
+    rep_stack        = np.stack(rep_mean_drops)      # (n_reps, F)
+    mean_across_reps = rep_stack.mean(axis=0)
+    std_across_reps  = rep_stack.std(axis=0)
+    baseline_mean    = float(np.mean(rep_mean_baselines))
+    baseline_std     = float(np.std(rep_mean_baselines))
+    n_reps           = rep_stack.shape[0]
+    names            = reference_names
+
+    order = np.argsort(mean_across_reps)[::-1]
+    sorted_names = [names[i] for i in order]
+    sorted_means = mean_across_reps[order]
+    sorted_stds  = std_across_reps[order]
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(7.5, max(3.5, 0.32 * len(sorted_names))))
+    y_pos = np.arange(len(sorted_names))
+    ax.barh(
+        y_pos, sorted_means, xerr=sorted_stds,
+        color="#c44e52", edgecolor="black", height=0.7,
+        error_kw=dict(ecolor="#444", lw=0.8, capsize=2),
+    )
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(sorted_names, fontsize=9)
+    ax.invert_yaxis()
+    ax.set_xlabel(f"Mean fused-head AUC drop on clinical shuffling (mean +/- SD across {n_reps} reps)", fontsize=10)
+    ax.axvline(0, color="black", linewidth=0.7)
+    ax.set_title(
+        "Fused-head clinical permutation importance",
+        fontsize=10, fontweight="bold",
+    )
+    ax.grid(axis="x", alpha=0.3, linestyle="--")
+    fig.tight_layout()
+
+    out_png = OUT_DIR / "S8e_fused_clinical_importance.png"
+    out_csv = OUT_DIR / "S8e_fused_clinical_importance.csv"
+    fig.savefig(out_png, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+    pd.DataFrame({
+        "feature":                 sorted_names,
+        "mean_drop_across_reps":   sorted_means,
+        "std_drop_across_reps":    sorted_stds,
+        "baseline_auc_mean":       baseline_mean,
+        "baseline_auc_std":        baseline_std,
+        "n_reps":                  n_reps,
+    }).to_csv(out_csv, index=False)
+
+    print(f"Saved: {out_png}")
+    print(f"Saved: {out_csv}")
+
+
+def _build_v4_fold_modules(fold_idx: int, cfg: dict, data, device, run_dir: Path | None = None):
     import importlib
     import torch
     from v4.classes.v4_hypertower import build_towers
@@ -622,7 +885,8 @@ def _build_v4_fold_modules(fold_idx: int, cfg: dict, data, device):
     stage_by_name = {s["name"]: s for s in cfg["stages"]}
     nt_cfg = stage_by_name["nt"]
     hb_cfg = stage_by_name["hb"]
-    ckpt_dir = V4_CKPT_RUN / "checkpoints" / f"fold{fold_idx}"
+    base = run_dir if run_dir is not None else V4_CKPT_RUN
+    ckpt_dir = base / "checkpoints" / f"fold{fold_idx}"
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"No v4 checkpoint directory: {ckpt_dir}")
 
@@ -782,7 +1046,6 @@ def _make_oriented_disc_detail(mean_patches: dict, examples: dict, out_path: Pat
     splits  = ["correct", "incorrect"]
 
     fig, axes = plt.subplots(2, 2, figsize=(8, 7.8), constrained_layout=True)
-    fig.patch.set_facecolor("#f6f6f6")
 
     # Column headers
     for ci, split in enumerate(splits):
@@ -819,11 +1082,6 @@ def _make_oriented_disc_detail(mean_patches: dict, examples: dict, out_path: Pat
                         ha="center", va="center", color="white", fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
 
-    fig.suptitle(
-        "Mean image-tower Grad-CAM, disc-centred (OD-oriented)\n"
-        "rows: ground truth   ·   columns: prediction outcome   ·   dashed circle = mean disc boundary",
-        fontsize=11, fontweight="bold",
-    )
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved: {out_path}")
@@ -1120,6 +1378,7 @@ def main(*, run_gradcam: bool = False, n_permutations: int = 30,
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     make_fusion_event_panel(split=fusion_split)
     make_clinical_importance(n_permutations=n_permutations)
+    make_fused_clinical_importance(n_permutations=n_permutations)
     if run_gradcam:
         make_oriented_gradcam()
     else:
